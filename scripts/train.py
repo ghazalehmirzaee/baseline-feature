@@ -16,13 +16,13 @@ from models.loss import MultiComponentLoss
 from utils.metrics import compute_metrics
 from utils.checkpointing import save_checkpoint, load_checkpoint
 from utils.logger import setup_logging
-
 from data.datasets import get_data_loaders
 
 
+
 class Trainer:
-    def __init__(self, config_path):
-        self.config = self._load_config(config_path)
+    def __init__(self, config):  # Changed to accept config directly instead of config_path
+        self.config = config
         self.logger = setup_logging("feature_graph_training")
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -35,10 +35,6 @@ class Trainer:
 
         self._setup_model()
         self._setup_training()
-
-    def _load_config(self, config_path):
-        with open(config_path) as f:
-            return yaml.safe_load(f)
 
     def _setup_model(self):
         # Load baseline model
@@ -55,6 +51,10 @@ class Trainer:
         pos_counts = torch.tensor(self.config['dataset']['positive_counts'])
         neg_counts = torch.tensor(self.config['dataset']['negative_counts'])
         self.pos_weights = (neg_counts / pos_counts).to(self.device)
+
+    def _load_config(self, config_path):
+        with open(config_path) as f:
+            return yaml.safe_load(f)
 
     def _setup_training(self):
         # Optimizer
@@ -212,18 +212,30 @@ class Trainer:
         return self.best_metrics
 
 
-if __name__ == '__main__':
+def main():
     parser = argparse.ArgumentParser(description='Train the multi-stage chest X-ray classification model')
     parser.add_argument('--config', type=str, required=True, help='Path to config file')
     parser.add_argument('--data-dir', type=str, required=True, help='Path to dataset directory')
     parser.add_argument('--output-dir', type=str, required=True, help='Path to output directory')
     args = parser.parse_args()
 
-    # Load configuration
-    with open(args.config, 'r') as f:
-        config = yaml.safe_load(f)
+    # Load and validate configuration
+    try:
+        with open(args.config, 'r') as f:
+            config = yaml.safe_load(f)
+    except Exception as e:
+        print(f"Error loading config file: {e}")
+        return
 
-    # Update config with data paths
+    # Initialize default configuration if sections don't exist
+    if 'dataset' not in config:
+        config['dataset'] = {}
+    if 'model' not in config:
+        config['model'] = {}
+    if 'training' not in config:
+        config['training'] = {}
+
+    # Update dataset paths
     config['dataset'].update({
         'train_csv': os.path.join(args.data_dir, 'train_list.txt'),
         'val_csv': os.path.join(args.data_dir, 'val_list.txt'),
@@ -232,14 +244,40 @@ if __name__ == '__main__':
         'bb_annotations': os.path.join(args.data_dir, 'BBox_List_2017.csv')
     })
 
+    # Add default values for positive and negative counts if not present
+    if 'positive_counts' not in config['dataset']:
+        config['dataset']['positive_counts'] = [1000] * 14  # Default values
+    if 'negative_counts' not in config['dataset']:
+        config['dataset']['negative_counts'] = [10000] * 14  # Default values
+
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Add checkpoint directory to config
+    config['training']['checkpoint_dir'] = str(output_dir / 'checkpoints')
+    os.makedirs(config['training']['checkpoint_dir'], exist_ok=True)
+
+    # Save the updated config
+    config_save_path = output_dir / 'config.yaml'
+    with open(config_save_path, 'w') as f:
+        yaml.dump(config, f, default_flow_style=False)
+
     # Create data loaders
-    train_loader, val_loader, test_loader = get_data_loaders(config)
+    try:
+        train_loader, val_loader, test_loader = get_data_loaders(config)
+    except Exception as e:
+        print(f"Error creating data loaders: {e}")
+        return
 
     # Initialize trainer and start training
-    trainer = Trainer(config)
-    trainer.train(train_loader, val_loader)
+    try:
+        trainer = Trainer(config)  # Pass config directly, not config path
+        trainer.train(train_loader, val_loader)
+    except Exception as e:
+        print(f"Error during training: {e}")
+        return
 
+if __name__ == '__main__':
+    main()
+    
