@@ -237,11 +237,11 @@ def main():
 
     # Update dataset paths
     config['dataset'].update({
-        'train_csv': os.path.join(args.data_dir, 'train_list.txt'),
-        'val_csv': os.path.join(args.data_dir, 'val_list.txt'),
-        'test_csv': os.path.join(args.data_dir, 'test_list.txt'),
+        'train_csv': os.path.join(args.data_dir, 'labels/train_list.txt'),
+        'val_csv': os.path.join(args.data_dir, 'labels/val_list.txt'),
+        'test_csv': os.path.join(args.data_dir, 'labels/test_list.txt'),
         'image_dir': os.path.join(args.data_dir, 'images'),
-        'bb_annotations': os.path.join(args.data_dir, 'BBox_List_2017.csv')
+        'bb_annotations': os.path.join(args.data_dir, 'labels/BBox_List_2017.csv')
     })
 
     # Add default values for positive and negative counts if not present
