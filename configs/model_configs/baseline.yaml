@@ -1,0 +1,17 @@
+# configs/model_configs/baseline.yaml
+model:
+  name: "vit_base_patch16"
+  pretrained: true
+  num_classes: 14
+  dropout_rate: 0.1
+
+training:
+  batch_size: 32
+  num_epochs: 100
+  learning_rate: 1e-4
+  weight_decay: 1e-4
+  warmup_epochs: 5
+  loss_weights:
+    wbce: 1.0
+    focal: 1.0
+    asl: 1.0

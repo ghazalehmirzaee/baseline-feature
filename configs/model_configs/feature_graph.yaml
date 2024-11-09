@@ -1,0 +1,22 @@
+# configs/model_configs/feature_graph.yaml
+model:
+  baseline_checkpoint: "/users/gm00051/projects/cvpr/baseline/Graph-Augmented-Vision-Transformers/scripts/checkpoints/checkpoint_epoch_82_auc_0.7225.pt"
+  feature_dim: 768
+  graph_hidden_dim: 256
+  num_graph_layers: 2
+  dropout_rate: 0.1
+  fusion_type: "concat_mlp"
+
+graph_construction:
+  direct_threshold: 10
+  limited_threshold: 3
+  confidence_gamma: 0.8
+  area_weight_alpha: 0.1
+
+training:
+  batch_size: 16
+  num_epochs: 50
+  learning_rate: 5e-5
+  weight_decay: 1e-4
+  warmup_epochs: 3
+
