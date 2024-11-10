@@ -5,7 +5,7 @@ import torch.nn as nn
 import torchvision.models as models
 from .graph import ProgressiveGraphConstruction
 from .fusion import FeatureGraphFusion
-
+import os
 
 class GraphAugmentedViT(nn.Module):
     def __init__(self, num_diseases=14, pretrained_path=None, feature_dim=768, hidden_dim=512):
