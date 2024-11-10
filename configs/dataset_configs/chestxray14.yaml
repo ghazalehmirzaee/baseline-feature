@@ -1,0 +1,57 @@
+# configs/dataset_configs/chestxray14.yaml
+name: "NIH-ChestXray14"
+data_root: "/users/gm00051/ChestX-ray14"
+
+paths:
+  images: "${data_root}/images"
+  train_list: "${data_root}/labels/train_list.txt"
+  val_list: "${data_root}/labels/val_list.txt"
+  test_list: "${data_root}/labels/test_list.txt"
+  bb_annotations: "${data_root}/labels/BBox_List_2017.csv"
+
+preprocessing:
+  image_size: 224
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+  augmentation:
+    train:
+      horizontal_flip_prob: 0.5
+      rotate_limit: 10
+      brightness_contrast_prob: 0.2
+      scale_limit: 0.1
+
+    val:
+      enabled: false
+
+classes:
+  names: [
+    'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration',
+    'Mass', 'Nodule', 'Pneumonia', 'Pneumothorax', 'Consolidation',
+    'Edema', 'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
+  ]
+
+  # Class frequencies from dataset
+  frequencies:
+    Atelectasis: 7996
+    Cardiomegaly: 1950
+    Effusion: 9261
+    Infiltration: 13914
+    Mass: 3988
+    Nodule: 4375
+    Pneumonia: 978
+    Pneumothorax: 3705
+    Consolidation: 3263
+    Edema: 1690
+    Emphysema: 1799
+    Fibrosis: 1158
+    Pleural_Thickening: 2279
+    Hernia: 144
+
+dataloader:
+  batch_size: 32
+  num_workers: 8
+  pin_memory: true
+  drop_last: true
+
+

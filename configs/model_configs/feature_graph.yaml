@@ -1,0 +1,65 @@
+# configs/model_configs/feature_graph.yaml
+model:
+  name: "feature_graph"
+  feature_dim: 768  # ViT feature dimension
+  graph_hidden_dim: 256
+  num_graph_layers: 2
+  dropout_rate: 0.1
+  freeze_backbone: true
+  baseline_checkpoint: "/users/gm00051/projects/cvpr/baseline/Graph-Augmented-Vision-Transformers/scripts/checkpoints/checkpoint_epoch_82_auc_0.7225.pt"
+
+dataset:
+  name: "NIH-ChestXray14"
+  image_size: 224
+  num_classes: 14
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  bb_annotations: "/users/gm00051/ChestX-ray14/labels/BBox_List_2017.csv"
+
+  classes: [
+    'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass',
+    'Nodule', 'Pneumonia', 'Pneumothorax', 'Consolidation', 'Edema',
+    'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
+  ]
+
+training:
+  batch_size: 32
+  num_epochs: 100
+  learning_rate: 1e-4
+  weight_decay: 1e-4
+  warmup_epochs: 5
+  scheduler:
+    type: "cosine"
+    T_max: 100
+    eta_min: 1e-6
+
+  # Graph construction parameters
+  direct_threshold: 10
+  limited_threshold: 3
+  confidence_gamma: 0.8
+
+  # Early stopping
+  patience: 10
+
+  # Checkpointing
+  checkpoint_dir: "checkpoints"
+  checkpoint_frequency: 5
+
+  # Optimizer
+  optimizer:
+    type: "AdamW"
+    beta1: 0.9
+    beta2: 0.999
+    eps: 1e-8
+
+  # Loss weights
+  loss_weights:
+    wbce: 1.0
+    focal: 1.0
+    asl: 1.0
+
+wandb:
+  project: "chest-xray-classification"
+  entity: "mirzaeeghazal"
+  tags: ["feature-graph", "development"]
+
