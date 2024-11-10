@@ -247,27 +247,23 @@ class GraphAugmentedViT(nn.Module):
 
         global_features = self.global_projection(global_features)  # [B, hidden_dim]
 
-        # Extract region features if bbox data available
-        if batch_data is not None:
-            region_features, area_matrix = self.extract_region_features(images, batch_data['bbox'])
-        else:
-            region_features = torch.zeros(batch_size, self.num_diseases, self.feature_dim).to(device)
-            area_matrix = torch.zeros(batch_size, self.num_diseases).to(device)
+        # Extract region features
+        region_features, area_matrix = self.extract_region_features(images, batch_data['bbox'])
+        # Project region features
+        region_features = self.region_projection(region_features)  # [B, num_diseases, hidden_dim]
 
         print(f"Region features shape: {region_features.shape}")
         print(f"Area matrix shape: {area_matrix.shape}")
-
-        # Project region features
-        region_features = self.region_projection(region_features)  # [B, num_diseases, hidden_dim]
 
         # Apply graph layers
         graph_features = region_features
         for graph_layer in self.graph_layers:
             graph_features = graph_layer(
-                graph_features,  # [B, num_diseases, hidden_dim]
-                area_matrix,  # [B, num_diseases]
-                self.co_occurrence_matrix.to(device)  # [num_diseases, num_diseases]
+                graph_features,
+                area_matrix,
+                self.co_occurrence_matrix.to(device)
             )
+            
 
         # Disease-specific attention
         query = global_features.unsqueeze(1)  # [B, 1, hidden_dim]

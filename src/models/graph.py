@@ -8,9 +8,9 @@ import torch.nn.functional as F
 class GraphLayer(nn.Module):
     def __init__(
             self,
-            feature_dim: int = 768,  # ViT output dimension
-            hidden_dim: int = 512,   # From your config
-            num_diseases: int = 14,  # Number of diseases
+            feature_dim: int,  # This should be 768 from ViT
+            hidden_dim: int,  # This is 512 from your config
+            num_diseases: int,  # This is 14
             dropout: float = 0.1
     ):
         super().__init__()
@@ -19,14 +19,15 @@ class GraphLayer(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_diseases = num_diseases
 
-        # Add input projection layer
-        self.input_proj = nn.Linear(feature_dim, hidden_dim)  # Add this line
+        # Project input features
+        self.feature_proj = nn.Linear(feature_dim, hidden_dim)
 
-        # Rest of the initialization remains the same
-        self.query_proj = nn.Linear(feature_dim, hidden_dim)
-        self.key_proj = nn.Linear(feature_dim, hidden_dim)
-        self.value_proj = nn.Linear(feature_dim, hidden_dim)
+        # Graph attention components
+        self.query_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.key_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.value_proj = nn.Linear(hidden_dim, hidden_dim)
 
+        # Edge weighting
         self.edge_weight = nn.Sequential(
             nn.Linear(2, hidden_dim),
             nn.ReLU(),
@@ -34,6 +35,7 @@ class GraphLayer(nn.Module):
             nn.Sigmoid()
         )
 
+        # Output transformation
         self.output_transform = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -47,46 +49,46 @@ class GraphLayer(nn.Module):
 
     def forward(
             self,
-            x: torch.Tensor,
-            area_matrix: torch.Tensor,
-            co_occurrence: torch.Tensor
+            x: torch.Tensor,  # [batch_size, num_diseases, feature_dim]
+            area_matrix: torch.Tensor,  # [batch_size, num_diseases]
+            co_occurrence: torch.Tensor  # [num_diseases, num_diseases]
     ) -> torch.Tensor:
         batch_size = x.size(0)
         device = x.device
 
-        print(f"GraphLayer input shapes:")
-        print(f"x: {x.shape}")
-        print(f"area_matrix: {area_matrix.shape}")
-        print(f"co_occurrence: {co_occurrence.shape}")
+        # Project features to hidden dimension
+        # Process each disease's features independently
+        x_proj = self.feature_proj(x)  # [batch_size, num_diseases, hidden_dim]
 
-        # Reshape input if needed
-        if x.shape[-1] != self.feature_dim:
-            x = x.transpose(-1, -2)
+        # Apply attention
+        q = self.query_proj(x_proj)  # [B, N, H]
+        k = self.key_proj(x_proj)  # [B, N, H]
+        v = self.value_proj(x_proj)  # [B, N, H]
 
-        # Project input for residual connection
-        x_proj = self.input_proj(x)  # Add this line
+        # Compute attention scores
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (self.hidden_dim ** 0.5)  # [B, N, N]
 
-        # Rest of the forward pass remains the same
-        q = self.query_proj(x)
-        k = self.key_proj(x)
-        v = self.value_proj(x)
-
-        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (self.hidden_dim ** 0.5)
-
+        # Compute edge weights based on area and co-occurrence
         edge_inputs = torch.stack([
-            area_matrix.unsqueeze(-1).expand(-1, -1, self.num_diseases),
-            co_occurrence.unsqueeze(0).expand(batch_size, -1, -1)
-        ], dim=-1)
+            area_matrix.unsqueeze(-1).expand(-1, -1, self.num_diseases),  # [B, N, N]
+            co_occurrence.unsqueeze(0).expand(batch_size, -1, -1)  # [B, N, N]
+        ], dim=-1)  # [B, N, N, 2]
 
-        edge_weights = self.edge_weight(edge_inputs).squeeze(-1)
+        edge_weights = self.edge_weight(edge_inputs).squeeze(-1)  # [B, N, N]
+
+        # Apply edge weights to attention scores
         attn_scores = attn_scores * edge_weights
+
+        # Normalize attention scores
         attn_probs = F.softmax(attn_scores, dim=-1)
         attn_probs = self.dropout(attn_probs)
 
-        out = torch.matmul(attn_probs, v)
+        # Compute output
+        out = torch.matmul(attn_probs, v)  # [B, N, H]
         out = self.norm1(out)
+
+        # Output transformation with residual connection
         out = self.output_transform(out)
-        out = self.norm2(out + x_proj)  # Now x_proj is defined
+        out = self.norm2(out + x_proj)  # Residual connection with projected features
 
-        return out
-
+        return out  # [batch_size, num_diseases, hidden_dim]
