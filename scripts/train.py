@@ -10,7 +10,6 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from tqdm import tqdm
 from pathlib import Path
-import logging
 
 from models.feature_graph import FeatureGraphModel
 from models.loss import MultiComponentLoss
@@ -18,7 +17,6 @@ from utils.metrics import compute_metrics
 from utils.checkpointing import save_checkpoint, load_checkpoint
 from utils.logger import setup_logging
 from data.datasets import get_data_loaders
-
 
 class Trainer:
     def __init__(self, config):
@@ -36,66 +34,6 @@ class Trainer:
         self._setup_model()
         self._setup_training()
 
-    def _load_checkpoint(self, checkpoint_path):
-        """Helper function to load checkpoint with proper error handling."""
-        self.logger.info(f"Loading checkpoint from {checkpoint_path}")
-
-        try:
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
-
-            # Check checkpoint structure
-            if isinstance(checkpoint, dict):
-                if 'model' in checkpoint:
-                    return checkpoint['model']
-                elif 'state_dict' in checkpoint:
-                    return checkpoint['state_dict']
-                else:
-                    # If checkpoint is a dict but doesn't have expected keys,
-                    # try using it directly
-                    self.logger.warning("Checkpoint structure is non-standard. Attempting to use directly.")
-                    return checkpoint
-            else:
-                # If checkpoint is not a dict, try using it directly
-                self.logger.warning("Checkpoint is not a dictionary. Attempting to use directly.")
-                return checkpoint
-
-        except Exception as e:
-            self.logger.error(f"Error loading checkpoint: {str(e)}")
-            raise RuntimeError(f"Failed to load checkpoint: {str(e)}")
-
-    def _setup_training(self):
-        """Setup training components like optimizer, scheduler, etc."""
-        # Optimizer
-        self.optimizer = AdamW(
-            self.model.parameters(),
-            lr=self.config['training']['learning_rate'],
-            weight_decay=self.config['training']['weight_decay']
-        )
-
-        # Learning rate scheduler
-        self.scheduler = CosineAnnealingWarmRestarts(
-            self.optimizer,
-            T_0=self.config['training']['warmup_epochs'],
-            T_mult=2
-        )
-
-        # Initialize best metrics
-        self.best_metrics = {
-            'mean_auc': 0.0,
-            'epoch': 0,
-            'metrics': None
-        }
-
-        # Early stopping
-        self.patience = self.config['training'].get('patience', 10)
-        self.patience_counter = 0
-
-        # Create checkpoint directory
-        checkpoint_dir = Path(self.config['training']['checkpoint_dir'])
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-        self.logger.info("Training setup completed")
-
     def _setup_model(self):
         try:
             checkpoint_path = self.config['model']['baseline_checkpoint']
@@ -112,7 +50,7 @@ class Trainer:
                 raise ValueError("Checkpoint does not contain model_state_dict")
 
             # Store best validation AUC for reference
-            self.best_val_auc = checkpoint.get('best_val_auc', 0.0)
+            self.best_val_auc = float(checkpoint.get('best_val_auc', 0.0))  # Convert to float
             self.logger.info(f"Previous best validation AUC: {self.best_val_auc}")
 
             # Initialize feature graph model with the state dict
@@ -131,15 +69,48 @@ class Trainer:
             # Log some information about the loaded model
             if 'metrics' in checkpoint:
                 self.logger.info("Previous model metrics:")
-                self.logger.info(f"Mean AUC: {checkpoint['metrics']['mean_auc']:.4f}")
-                self.logger.info(f"Mean AP: {checkpoint['metrics']['mean_ap']:.4f}")
-                self.logger.info(f"Mean F1: {checkpoint['metrics']['mean_f1']:.4f}")
+                metrics = checkpoint['metrics']
+                self.logger.info(f"Mean AUC: {float(metrics['mean_auc']):.4f}")
+                self.logger.info(f"Mean AP: {float(metrics['mean_ap']):.4f}")
+                self.logger.info(f"Mean F1: {float(metrics['mean_f1']):.4f}")
 
         except Exception as e:
             self.logger.error(f"Error in model setup: {str(e)}")
             self.logger.error("Traceback:", exc_info=True)
             raise RuntimeError(f"Model setup failed: {str(e)}")
 
+    def _setup_training(self):
+        """Setup training components like optimizer, scheduler, etc."""
+        # Optimizer
+        self.optimizer = AdamW(
+            self.model.parameters(),
+            lr=float(self.config['training']['learning_rate']),  # Convert to float
+            weight_decay=float(self.config['training']['weight_decay'])  # Convert to float
+        )
+
+        # Learning rate scheduler
+        self.scheduler = CosineAnnealingWarmRestarts(
+            self.optimizer,
+            T_0=int(self.config['training']['warmup_epochs']),  # Convert to int
+            T_mult=2
+        )
+
+        # Initialize best metrics
+        self.best_metrics = {
+            'mean_auc': 0.0,
+            'epoch': 0,
+            'metrics': None
+        }
+
+        # Early stopping
+        self.patience = int(self.config['training'].get('patience', 10))  # Convert to int
+        self.patience_counter = 0
+
+        # Create checkpoint directory
+        checkpoint_dir = Path(self.config['training']['checkpoint_dir'])
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        self.logger.info("Training setup completed")
 
     def train_epoch(self, train_loader, epoch):
         self.model.train()
@@ -163,7 +134,7 @@ class Trainer:
                 epoch_losses.append(loss.item())
                 pbar.set_postfix({
                     'loss': f'{loss.item():.4f}',
-                    'avg_loss': f'{sum(epoch_losses) / len(epoch_losses):.4f}'
+                    'avg_loss': f'{sum(epoch_losses)/len(epoch_losses):.4f}'
                 })
 
                 # Log to wandb
@@ -203,16 +174,17 @@ class Trainer:
         # Log metrics
         wandb.log({
             'val_loss': sum(val_losses) / len(val_losses),
-            'val_mean_auc': metrics['mean_auc'],
-            'val_mean_ap': metrics['mean_ap'],
-            'val_mean_f1': metrics['mean_f1'],
+            'val_mean_auc': float(metrics['mean_auc']),  # Convert to float
+            'val_mean_ap': float(metrics['mean_ap']),    # Convert to float
+            'val_mean_f1': float(metrics['mean_f1']),    # Convert to float
             'epoch': epoch
         })
 
-        # Update best metrics and save checkpoint
-        if metrics['mean_auc'] > self.best_metrics['mean_auc']:
+        # Update best metrics if current AUC is better
+        current_auc = float(metrics['mean_auc'])  # Convert to float
+        if current_auc > self.best_metrics['mean_auc']:
             self.best_metrics = {
-                'mean_auc': metrics['mean_auc'],
+                'mean_auc': current_auc,
                 'epoch': epoch,
                 'metrics': metrics
             }
