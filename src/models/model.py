@@ -20,21 +20,17 @@ class GraphAugmentedViT(nn.Module):
         """
         super().__init__()
 
-        # Store parameters as instance variables
+        # Store parameters
         self.num_diseases = num_diseases
         self.feature_dim = feature_dim
         self.hidden_dim = hidden_dim
 
-        # Initialize Vision Transformer backbone
-        self.vit = models.vit_b_16(pretrained=True)
+        # Initialize ViT with the correct weights
+        self.vit = models.vit_b_16(weights=models.ViT_B_16_Weights.IMAGENET1K_V1)
+        self.vit.heads = nn.Identity()  # Remove classification head
 
-        # Replace the classification head
-        self.vit.heads = nn.Identity()
-
-        # Load pretrained weights if provided
         if pretrained_path:
-            state_dict = torch.load(pretrained_path)
-            # Handle potential differences in state dict keys
+            state_dict = torch.load(pretrained_path, map_location='cpu')
             if 'model_state_dict' in state_dict:
                 state_dict = state_dict['model_state_dict']
             self.vit.load_state_dict(state_dict, strict=False)
@@ -80,7 +76,7 @@ class GraphAugmentedViT(nn.Module):
         batch_size = images.size(0)
         device = images.device
 
-        # Initialize feature storage
+        # Initialize feature storage on the correct device
         region_features = torch.zeros(batch_size, self.num_diseases, self.feature_dim, device=device)
         area_matrix = torch.zeros(batch_size, self.num_diseases, device=device)
 
@@ -129,39 +125,37 @@ class GraphAugmentedViT(nn.Module):
                                     )
 
                                     with torch.no_grad():
-                                        features = self.vit.forward_features(region)
+                                        features = self.vit.forward_features(region)  # This should be on GPU
                                     box_features.append(features.mean(1))
                                     total_area += (y2 - y1) * (x2 - x1)
 
                             except Exception as e:
-                                print(f"Error processing box: {e}")
+                                print(f"Error processing box in batch {b}: {str(e)}")
                                 continue
 
                         if box_features:
-                            region_features[b, disease_idx] = torch.stack(box_features).mean(0)
-                            area_matrix[b, disease_idx] = total_area
+                            try:
+                                features_stack = torch.stack(box_features).to(device)
+                                region_features[b, disease_idx] = features_stack.mean(0)
+                                area_matrix[b, disease_idx] = total_area
+                            except Exception as e:
+                                print(f"Error stacking features in batch {b}: {str(e)}")
 
             except Exception as e:
-                print(f"Error processing batch item {b}: {e}")
+                print(f"Error processing batch item {b}: {str(e)}")
                 continue
 
-        return region_features, area_matrix
+        return region_features.to(device), area_matrix.to(device)
 
 
     def forward(self, images, batch_data=None):
-        """
-        Forward pass
-
-        Args:
-            images: Input images (B, C, H, W)
-            batch_data: Batch information including bbox data
-        """
+        """Forward pass"""
         batch_size = images.size(0)
         device = images.device
 
         # Get global image features
-        vit_features = self.vit(images)
-        pooled_features = self.feature_pooling(vit_features)
+        vit_features = self.vit(images)  # This should be on GPU
+        pooled_features = self.feature_pooling(vit_features)  # This will be on GPU
 
         # Extract region features if bbox_data is provided
         if batch_data is not None:
@@ -170,12 +164,17 @@ class GraphAugmentedViT(nn.Module):
             region_features = torch.zeros(batch_size, self.num_diseases, self.feature_dim, device=device)
             area_matrix = torch.zeros(batch_size, self.num_diseases, device=device)
 
+        # Ensure all tensors are on the same device
+        region_features = region_features.to(device)
+        area_matrix = area_matrix.to(device)
+
         # Construct graph
         adjacency_matrix = self.graph_constructor(
             region_features,
             area_matrix,
-            self.co_occurrence_count
+            self.co_occurrence_count.to(device)
         )
+        adjacency_matrix = adjacency_matrix.to(device)
 
         # Apply graph attention
         graph_features = torch.matmul(adjacency_matrix, region_features)
@@ -196,7 +195,8 @@ class GraphAugmentedViT(nn.Module):
 
         # If in training mode and labels are provided
         if self.training and 'labels' in batch_data:
-            self.update_co_occurrence(batch_data['labels'])
+            labels = batch_data['labels'].to(device)
+            self.update_co_occurrence(labels)
 
         return torch.sigmoid(logits)
 
