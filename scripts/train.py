@@ -1,4 +1,3 @@
-# scripts/train.py
 import argparse
 import os
 import yaml
@@ -17,6 +16,10 @@ from utils.metrics import compute_metrics
 from utils.checkpointing import save_checkpoint, load_checkpoint
 from utils.logger import setup_logging
 from data.datasets import get_data_loaders
+from data.dataset_utils import DatasetUtils
+from models.graph_modules.feature_utils import FeatureExtractor
+from utils.visualization import GraphVisualizer, GraphMetrics
+
 
 class Trainer:
     def __init__(self, config):
@@ -31,6 +34,15 @@ class Trainer:
             config=self.config
         )
 
+        # Initialize utilities
+        self.dataset_utils = DatasetUtils()
+        self.disease_names = [
+            'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass',
+            'Nodule', 'Pneumonia', 'Pneumothorax', 'Consolidation', 'Edema',
+            'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
+        ]
+        self.graph_metrics = GraphMetrics()
+
         self._setup_model()
         self._setup_training()
 
@@ -42,23 +54,26 @@ class Trainer:
             # Load checkpoint
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
 
-            # We want to use the model_state_dict for our baseline model
             if 'model_state_dict' in checkpoint:
                 self.logger.info("Found model_state_dict in checkpoint")
                 self.baseline_model = checkpoint['model_state_dict']
             else:
                 raise ValueError("Checkpoint does not contain model_state_dict")
 
-            # Store best validation AUC for reference
-            self.best_val_auc = float(checkpoint.get('best_val_auc', 0.0))  # Convert to float
-            self.logger.info(f"Previous best validation AUC: {self.best_val_auc}")
-
-            # Initialize feature graph model with the state dict
-            self.logger.info("Initializing feature graph model...")
+            # Initialize model
             self.model = FeatureGraphModel(self.config, self.baseline_model).to(self.device)
 
-            # Loss and metrics
-            self.logger.info("Setting up loss function...")
+            # Initialize feature extractor
+            self.feature_extractor = FeatureExtractor(
+                self.model.backbone,
+                self.model.feature_proj,
+                self.config['model']['graph_hidden_dim']
+            )
+
+            # Initialize graph visualizer
+            self.graph_visualizer = GraphVisualizer(self.disease_names)
+
+            # Setup loss function
             self.criterion = MultiComponentLoss(self.config['training']['loss_weights'])
 
             # Calculate positive weights for WBCE
@@ -66,51 +81,70 @@ class Trainer:
             neg_counts = torch.tensor(self.config['dataset']['negative_counts'])
             self.pos_weights = (neg_counts / pos_counts).to(self.device)
 
-            # Log some information about the loaded model
             if 'metrics' in checkpoint:
                 self.logger.info("Previous model metrics:")
                 metrics = checkpoint['metrics']
                 self.logger.info(f"Mean AUC: {float(metrics['mean_auc']):.4f}")
-                self.logger.info(f"Mean AP: {float(metrics['mean_ap']):.4f}")
-                self.logger.info(f"Mean F1: {float(metrics['mean_f1']):.4f}")
 
         except Exception as e:
             self.logger.error(f"Error in model setup: {str(e)}")
-            self.logger.error("Traceback:", exc_info=True)
             raise RuntimeError(f"Model setup failed: {str(e)}")
 
     def _setup_training(self):
-        """Setup training components like optimizer, scheduler, etc."""
-        # Optimizer
         self.optimizer = AdamW(
             self.model.parameters(),
-            lr=float(self.config['training']['learning_rate']),  # Convert to float
-            weight_decay=float(self.config['training']['weight_decay'])  # Convert to float
+            lr=float(self.config['training']['learning_rate']),
+            weight_decay=float(self.config['training']['weight_decay'])
         )
 
-        # Learning rate scheduler
         self.scheduler = CosineAnnealingWarmRestarts(
             self.optimizer,
-            T_0=int(self.config['training']['warmup_epochs']),  # Convert to int
+            T_0=int(self.config['training']['warmup_epochs']),
             T_mult=2
         )
 
-        # Initialize best metrics
         self.best_metrics = {
             'mean_auc': 0.0,
             'epoch': 0,
             'metrics': None
         }
 
-        # Early stopping
-        self.patience = int(self.config['training'].get('patience', 10))  # Convert to int
+        self.patience = int(self.config['training'].get('patience', 10))
         self.patience_counter = 0
 
-        # Create checkpoint directory
         checkpoint_dir = Path(self.config['training']['checkpoint_dir'])
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        self.logger.info("Training setup completed")
+        # Create visualization directory
+        self.viz_dir = checkpoint_dir / 'visualizations'
+        self.viz_dir.mkdir(exist_ok=True)
+
+    def process_batch(self, images, targets, bboxes):
+        """Process a single batch of data."""
+        images = images.to(self.device)
+        targets = targets.to(self.device)
+
+        # Process bounding boxes
+        if bboxes is not None:
+            processed_bboxes = self.dataset_utils.process_bbox_annotations(bboxes)
+
+            # Extract features and build graph
+            features_dict, areas_dict = self.feature_extractor.extract_features(
+                images, processed_bboxes
+            )
+
+            # Create disease pairs
+            disease_pairs = self.dataset_utils.create_disease_pairs(
+                processed_bboxes['labels'],
+                processed_bboxes['boxes']
+            )
+        else:
+            processed_bboxes = None
+            features_dict = {}
+            areas_dict = {}
+            disease_pairs = {}
+
+        return images, targets, processed_bboxes, features_dict, areas_dict, disease_pairs
 
     def train_epoch(self, train_loader, epoch):
         self.model.train()
@@ -118,11 +152,20 @@ class Trainer:
 
         with tqdm(train_loader, desc=f'Epoch {epoch}') as pbar:
             for batch_idx, (images, targets, bboxes) in enumerate(pbar):
-                images = images.to(self.device)
-                targets = targets.to(self.device)
+                # Process batch
+                images, targets, processed_bboxes, features_dict, areas_dict, disease_pairs = \
+                    self.process_batch(images, targets, bboxes)
 
                 # Forward pass
-                predictions = self.model(images, bboxes)
+                predictions = self.model(
+                    images=images,
+                    bboxes=processed_bboxes,
+                    features_dict=features_dict,
+                    areas_dict=areas_dict,
+                    disease_pairs=disease_pairs
+                )
+
+                # Compute loss
                 loss, loss_components = self.criterion(predictions, targets, self.pos_weights)
 
                 # Backward pass
@@ -134,7 +177,7 @@ class Trainer:
                 epoch_losses.append(loss.item())
                 pbar.set_postfix({
                     'loss': f'{loss.item():.4f}',
-                    'avg_loss': f'{sum(epoch_losses)/len(epoch_losses):.4f}'
+                    'avg_loss': f'{sum(epoch_losses) / len(epoch_losses):.4f}'
                 })
 
                 # Log to wandb
@@ -146,6 +189,18 @@ class Trainer:
                     'learning_rate': self.optimizer.param_groups[0]['lr']
                 })
 
+                # Visualize graph weights periodically
+                if batch_idx % 100 == 0:
+                    graph_weights = self.model.get_graph_weights()
+                    self.graph_visualizer.plot_graph_weights(
+                        graph_weights,
+                        str(self.viz_dir / f'graph_weights_epoch{epoch}_batch{batch_idx}.png')
+                    )
+
+                    # Log graph statistics
+                    graph_stats = self.graph_metrics.compute_graph_statistics(graph_weights)
+                    wandb.log({f'graph_{k}': v for k, v in graph_stats.items()})
+
         return sum(epoch_losses) / len(epoch_losses)
 
     def validate(self, val_loader, epoch):
@@ -156,10 +211,19 @@ class Trainer:
 
         with torch.no_grad():
             for images, targets, bboxes in tqdm(val_loader, desc='Validation'):
-                images = images.to(self.device)
-                targets = targets.to(self.device)
+                # Process batch
+                images, targets, processed_bboxes, features_dict, areas_dict, disease_pairs = \
+                    self.process_batch(images, targets, bboxes)
 
-                predictions = self.model(images, bboxes)
+                # Forward pass
+                predictions = self.model(
+                    images=images,
+                    bboxes=processed_bboxes,
+                    features_dict=features_dict,
+                    areas_dict=areas_dict,
+                    disease_pairs=disease_pairs
+                )
+
                 loss, _ = self.criterion(predictions, targets, self.pos_weights)
 
                 val_losses.append(loss.item())
@@ -171,17 +235,28 @@ class Trainer:
         targets = torch.cat(all_targets)
         metrics = compute_metrics(predictions, targets)
 
+        # Evaluate graph quality
+        graph_weights = self.model.get_graph_weights()
+        graph_quality = self.graph_metrics.evaluate_graph_quality(graph_weights, targets)
+
         # Log metrics
         wandb.log({
             'val_loss': sum(val_losses) / len(val_losses),
-            'val_mean_auc': float(metrics['mean_auc']),  # Convert to float
-            'val_mean_ap': float(metrics['mean_ap']),    # Convert to float
-            'val_mean_f1': float(metrics['mean_f1']),    # Convert to float
-            'epoch': epoch
+            'val_mean_auc': float(metrics['mean_auc']),
+            'val_mean_ap': float(metrics['mean_ap']),
+            'val_mean_f1': float(metrics['mean_f1']),
+            'epoch': epoch,
+            **{f'graph_quality_{k}': v for k, v in graph_quality.items()}
         })
 
-        # Update best metrics if current AUC is better
-        current_auc = float(metrics['mean_auc'])  # Convert to float
+        # Save visualization
+        self.graph_visualizer.plot_graph_weights(
+            graph_weights,
+            str(self.viz_dir / f'graph_weights_epoch{epoch}_val.png')
+        )
+
+        # Update best metrics
+        current_auc = float(metrics['mean_auc'])
         if current_auc > self.best_metrics['mean_auc']:
             self.best_metrics = {
                 'mean_auc': current_auc,
@@ -189,6 +264,7 @@ class Trainer:
                 'metrics': metrics
             }
 
+            # Save checkpoint
             save_checkpoint(
                 self.model,
                 self.optimizer,
@@ -207,22 +283,15 @@ class Trainer:
         self.logger.info("Starting training...")
 
         for epoch in range(self.config['training']['num_epochs']):
-            # Train epoch
             train_loss = self.train_epoch(train_loader, epoch)
-
-            # Validate
             val_metrics = self.validate(val_loader, epoch)
-
-            # Learning rate scheduling
             self.scheduler.step()
 
-            # Logging
             self.logger.info(
                 f"Epoch {epoch}: Train Loss = {train_loss:.4f}, "
                 f"Val AUC = {val_metrics['mean_auc']:.4f}"
             )
 
-            # Early stopping
             if self.patience_counter >= self.patience:
                 self.logger.info(
                     f"Early stopping triggered after {epoch} epochs. "
@@ -250,7 +319,6 @@ def main():
     parser.add_argument('--output-dir', type=str, required=True, help='Path to output directory')
     args = parser.parse_args()
 
-    # Load and validate configuration
     try:
         with open(args.config, 'r') as f:
             config = yaml.safe_load(f)
@@ -258,15 +326,7 @@ def main():
         print(f"Error loading config file: {e}")
         return
 
-    # Initialize default configuration if sections don't exist
-    if 'dataset' not in config:
-        config['dataset'] = {}
-    if 'model' not in config:
-        config['model'] = {}
-    if 'training' not in config:
-        config['training'] = {}
-
-    # Update dataset paths
+    # Update paths and create directories
     config['dataset'].update({
         'train_csv': os.path.join(args.data_dir, 'labels/train_list.txt'),
         'val_csv': os.path.join(args.data_dir, 'labels/val_list.txt'),
@@ -275,40 +335,27 @@ def main():
         'bb_annotations': os.path.join(args.data_dir, 'labels/BBox_List_2017.csv')
     })
 
-    # Add default values for positive and negative counts if not present
-    if 'positive_counts' not in config['dataset']:
-        config['dataset']['positive_counts'] = [1000] * 14  # Default values
-    if 'negative_counts' not in config['dataset']:
-        config['dataset']['negative_counts'] = [10000] * 14  # Default values
-
-    # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Add checkpoint directory to config
     config['training']['checkpoint_dir'] = str(output_dir / 'checkpoints')
     os.makedirs(config['training']['checkpoint_dir'], exist_ok=True)
 
-    # Save the updated config
+    # Save config
     config_save_path = output_dir / 'config.yaml'
     with open(config_save_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False)
 
-    # Create data loaders
     try:
         train_loader, val_loader, test_loader = get_data_loaders(config)
-    except Exception as e:
-        print(f"Error creating data loaders: {e}")
-        return
-
-    # Initialize trainer and start training
-    try:
-        trainer = Trainer(config)  # Pass config directly, not config path
+        trainer = Trainer(config)
         trainer.train(train_loader, val_loader)
     except Exception as e:
         print(f"Error during training: {e}")
         return
 
+
 if __name__ == '__main__':
     main()
+
     
