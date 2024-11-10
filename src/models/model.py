@@ -1,29 +1,27 @@
+
 # src/models/model.py
 
+import os
 import torch
 import torch.nn as nn
 import torchvision.models as models
+import torch.nn.functional as F
 from .graph import ProgressiveGraphConstruction
-from .fusion import FeatureGraphFusion
-import os
+
 
 class GraphAugmentedViT(nn.Module):
     def __init__(self, num_diseases=14, pretrained_path=None, feature_dim=768, hidden_dim=512):
-        """
-        Graph-augmented Vision Transformer for multi-label chest X-ray classification
-
-        Args:
-            num_diseases: Number of disease classes
-            pretrained_path: Path to pretrained ViT weights
-            feature_dim: Dimension of ViT features
-            hidden_dim: Dimension of hidden layers
-        """
         super().__init__()
 
         # Store parameters
         self.num_diseases = num_diseases
         self.feature_dim = feature_dim
         self.hidden_dim = hidden_dim
+        self.diseases = [
+            'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration',
+            'Mass', 'Nodule', 'Pneumonia', 'Pneumothorax', 'Consolidation',
+            'Edema', 'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
+        ]
 
         # Initialize ViT with the correct weights
         self.vit = models.vit_b_16(weights=models.ViT_B_16_Weights.IMAGENET1K_V1)
@@ -41,13 +39,7 @@ class GraphAugmentedViT(nn.Module):
             feature_dim=feature_dim
         )
 
-        self.fusion_module = FeatureGraphFusion(
-            vit_dim=feature_dim,
-            num_diseases=num_diseases,
-            hidden_dim=hidden_dim
-        )
-
-        # Additional layers
+        # Project ViT features to hidden dimension
         self.feature_pooling = nn.Sequential(
             nn.Linear(feature_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -55,28 +47,46 @@ class GraphAugmentedViT(nn.Module):
             nn.Dropout(0.1)
         )
 
-        self.final_classifier = nn.Sequential(
+        # Project graph features to hidden dimension
+        self.graph_projection = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1)
+        )
+
+        # Disease attention with correct dimensions
+        self.disease_attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=8,
+            dropout=0.1,
+            batch_first=True
+        )
+
+        # Final fusion and classification
+        self.fusion_module = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.LayerNorm(hidden_dim // 2),
             nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim // 2, num_diseases)
+            nn.Dropout(0.1)
         )
 
-        # Disease attention
-        self.disease_attention = nn.MultiheadAttention(hidden_dim, 8, dropout=0.1)
+        self.final_classifier = nn.Linear(hidden_dim // 2, num_diseases)
 
         # Initialize co-occurrence tracking
         self.register_buffer('co_occurrence_matrix', torch.zeros(num_diseases, num_diseases))
         self.register_buffer('co_occurrence_count', torch.zeros(num_diseases, num_diseases))
-
 
     def extract_regions(self, images, batch_data):
         """Extract and process regions based on bounding box data"""
         batch_size = images.size(0)
         device = images.device
 
-        # Initialize feature storage on the correct device
+        # Initialize feature storage
         region_features = torch.zeros(batch_size, self.num_diseases, self.feature_dim, device=device)
         area_matrix = torch.zeros(batch_size, self.num_diseases, device=device)
 
@@ -117,7 +127,7 @@ class GraphAugmentedViT(nn.Module):
 
                                 if x2 > x1 and y2 > y1:  # Valid region
                                     region = images[b:b + 1, :, y1:y2, x1:x2]
-                                    region = nn.functional.interpolate(
+                                    region = F.interpolate(
                                         region,
                                         size=(224, 224),
                                         mode='bilinear',
@@ -125,7 +135,7 @@ class GraphAugmentedViT(nn.Module):
                                     )
 
                                     with torch.no_grad():
-                                        features = self.vit.forward_features(region)  # This should be on GPU
+                                        features = self.vit.forward_features(region)
                                     box_features.append(features.mean(1))
                                     total_area += (y2 - y1) * (x2 - x1)
 
@@ -147,24 +157,33 @@ class GraphAugmentedViT(nn.Module):
 
         return region_features.to(device), area_matrix.to(device)
 
+    def update_co_occurrence(self, labels):
+        """Update co-occurrence statistics based on batch labels"""
+        device = labels.device
+        pos_samples = (labels > 0.5).float()
+        batch_co_occurrence = torch.matmul(pos_samples.t(), pos_samples).to(device)
+        self.co_occurrence_matrix += batch_co_occurrence
+        self.co_occurrence_count += (batch_co_occurrence > 0).float()
 
     def forward(self, images, batch_data=None):
         """Forward pass"""
         batch_size = images.size(0)
         device = images.device
 
-        # Get global image features
-        vit_features = self.vit(images)  # This should be on GPU
-        pooled_features = self.feature_pooling(vit_features)  # This will be on GPU
+        # Get global image features from ViT
+        vit_features = self.vit(images)  # [batch_size, feature_dim]
 
-        # Extract region features if bbox_data is provided
+        # Project ViT features to hidden dimension
+        pooled_features = self.feature_pooling(vit_features)  # [batch_size, hidden_dim]
+
+        # Extract and process region features
         if batch_data is not None:
             region_features, area_matrix = self.extract_regions(images, batch_data)
         else:
             region_features = torch.zeros(batch_size, self.num_diseases, self.feature_dim, device=device)
             area_matrix = torch.zeros(batch_size, self.num_diseases, device=device)
 
-        # Ensure all tensors are on the same device
+        # Ensure all tensors are on the correct device
         region_features = region_features.to(device)
         area_matrix = area_matrix.to(device)
 
@@ -174,62 +193,73 @@ class GraphAugmentedViT(nn.Module):
             area_matrix,
             self.co_occurrence_count.to(device)
         )
-        adjacency_matrix = adjacency_matrix.to(device)
 
-        # Apply graph attention
-        graph_features = torch.matmul(adjacency_matrix, region_features)
+        # Apply graph attention and project to hidden dimension
+        graph_features = torch.matmul(adjacency_matrix, region_features)  # [batch_size, num_diseases, feature_dim]
+        graph_features = self.graph_projection(graph_features)  # [batch_size, num_diseases, hidden_dim]
 
-        # Disease-specific attention
-        attn_output, _ = self.disease_attention(
-            pooled_features.unsqueeze(0),
-            graph_features.transpose(0, 1),
-            graph_features.transpose(0, 1)
-        )
-        attn_output = attn_output.squeeze(0)
+        # Prepare features for attention
+        query = pooled_features.unsqueeze(1)  # [batch_size, 1, hidden_dim]
+        key = graph_features  # [batch_size, num_diseases, hidden_dim]
+        value = graph_features  # [batch_size, num_diseases, hidden_dim]
 
-        # Fuse features
-        fused_features = self.fusion_module(attn_output, graph_features)
+        # Apply disease attention
+        attn_output, _ = self.disease_attention(query, key, value)  # [batch_size, 1, hidden_dim]
+        attn_output = attn_output.squeeze(1)  # [batch_size, hidden_dim]
+
+        # Concatenate and fuse features
+        fused_features = torch.cat([pooled_features, attn_output], dim=1)  # [batch_size, hidden_dim * 2]
+        fused_features = self.fusion_module(fused_features)  # [batch_size, hidden_dim // 2]
 
         # Final classification
-        logits = self.final_classifier(fused_features)
+        logits = self.final_classifier(fused_features)  # [batch_size, num_diseases]
 
-        # If in training mode and labels are provided
+        # Update co-occurrence if in training
         if self.training and 'labels' in batch_data:
             labels = batch_data['labels'].to(device)
             self.update_co_occurrence(labels)
 
         return torch.sigmoid(logits)
 
-
-
-    def get_attention_weights(self, images, bbox_data=None):
-        """
-        Get attention weights for visualization
-
-        Args:
-            images: Input images
-            bbox_data: Optional bounding box information
-        """
+    def get_attention_maps(self, images, batch_data=None):
+        """Get attention maps for visualization"""
         self.eval()
         with torch.no_grad():
-            # Get features
+            batch_size = images.size(0)
+            device = images.device
+
+            # Get features and process as in forward pass
             vit_features = self.vit(images)
             pooled_features = self.feature_pooling(vit_features)
 
-            if bbox_data is not None:
-                region_features, area_matrix = self.extract_regions(images, bbox_data)
+            if batch_data is not None:
+                region_features, area_matrix = self.extract_regions(images, batch_data)
             else:
-                region_features = torch.zeros_like(pooled_features.unsqueeze(1).expand(-1, self.num_diseases, -1))
-                area_matrix = torch.zeros(images.size(0), self.num_diseases, device=images.device)
+                region_features = torch.zeros(batch_size, self.num_diseases, self.feature_dim, device=device)
+                area_matrix = torch.zeros(batch_size, self.num_diseases, device=device)
 
-            # Get attention weights
-            _, attn_weights = self.disease_attention(
-                pooled_features.unsqueeze(0),
-                region_features.transpose(0, 1),
-                region_features.transpose(0, 1)
+            adjacency_matrix = self.graph_constructor(
+                region_features.to(device),
+                area_matrix.to(device),
+                self.co_occurrence_count.to(device)
             )
 
-        return attn_weights
+            graph_features = torch.matmul(adjacency_matrix, region_features)
+            graph_features = self.graph_projection(graph_features)
+
+            query = pooled_features.unsqueeze(1)
+            key = graph_features
+            value = graph_features
+
+            # Get attention weights
+            _, attention_weights = self.disease_attention(
+                query, key, value,
+                need_weights=True,
+                average_head_weights=True
+            )
+
+            return attention_weights  # [batch_size, 1, num_diseases]
+
 
     @torch.no_grad()
     def get_graph_visualization(self):
