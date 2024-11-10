@@ -129,7 +129,7 @@ class GraphAugmentedViT(nn.Module):
         # Remove classification head
         self.base_model.head = nn.Identity()
 
-        
+
     def extract_global_features(self, images: torch.Tensor) -> torch.Tensor:
         """Extract global image features"""
         with torch.no_grad():
@@ -212,57 +212,57 @@ class GraphAugmentedViT(nn.Module):
 
         return region_features, area_matrix
 
-    def forward(
-            self,
-            images: torch.Tensor,
-            batch_data: Optional[Dict] = None
-    ) -> torch.Tensor:
+
+    def forward(self, images: torch.Tensor, batch_data: Optional[Dict] = None) -> torch.Tensor:
         """Forward pass"""
         device = images.device
         batch_size = images.size(0)
 
         # Extract global features
-        global_features = self.extract_global_features(images)
-        global_features = self.global_projection(global_features)
+        global_features = self.extract_global_features(images)  # [B, feature_dim]
+        global_features = self.global_projection(global_features)  # [B, hidden_dim]
 
         # Extract region features if bbox data available
         if batch_data is not None:
             region_features, area_matrix = self.extract_region_features(images, batch_data['bbox'])
-            region_features = self.region_projection(region_features)
         else:
-            region_features = torch.zeros(batch_size, self.num_diseases, self.hidden_dim).to(device)
+            region_features = torch.zeros(batch_size, self.num_diseases, self.feature_dim).to(device)
             area_matrix = torch.zeros(batch_size, self.num_diseases).to(device)
+
+        # Project region features
+        region_features = self.region_projection(region_features)  # [B, num_diseases, hidden_dim]
 
         # Apply graph layers
         graph_features = region_features
         for graph_layer in self.graph_layers:
             graph_features = graph_layer(
-                graph_features,
-                area_matrix,
-                self.co_occurrence_matrix.to(device)
+                graph_features,  # [B, num_diseases, hidden_dim]
+                area_matrix,  # [B, num_diseases]
+                self.co_occurrence_matrix.to(device)  # [num_diseases, num_diseases]
             )
 
         # Disease-specific attention
-        query = global_features.unsqueeze(1)
+        query = global_features.unsqueeze(1)  # [B, 1, hidden_dim]
         attn_output, _ = self.disease_attention(
             query,
             graph_features,
             graph_features
         )
-        attn_output = attn_output.squeeze(1)
+        attn_output = attn_output.squeeze(1)  # [B, hidden_dim]
 
         # Combine features
-        combined_features = torch.cat([global_features, attn_output], dim=1)
-        fused_features = self.fusion_layer(combined_features)
+        combined_features = torch.cat([global_features, attn_output], dim=1)  # [B, hidden_dim*2]
+        fused_features = self.fusion_layer(combined_features)  # [B, hidden_dim//2]
 
         # Final prediction
-        logits = self.classifier(fused_features)
+        logits = self.classifier(fused_features)  # [B, num_diseases]
 
         # Update co-occurrence if training
         if self.training and 'labels' in batch_data:
             self._update_co_occurrence(batch_data['labels'].to(device))
 
         return torch.sigmoid(logits)
+
 
     def _update_co_occurrence(self, labels: torch.Tensor):
         """Update disease co-occurrence statistics"""

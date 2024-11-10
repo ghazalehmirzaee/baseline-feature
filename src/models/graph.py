@@ -6,29 +6,27 @@ import torch.nn.functional as F
 
 
 class GraphLayer(nn.Module):
-    """
-    Graph neural network layer for disease relationship modeling
-    """
-
     def __init__(
             self,
-            in_dim: int,
+            feature_dim: int,
             hidden_dim: int,
             num_diseases: int,
             dropout: float = 0.1
     ):
         super().__init__()
 
-        self.in_dim = in_dim
+        self.feature_dim = feature_dim
         self.hidden_dim = hidden_dim
         self.num_diseases = num_diseases
 
-        # Graph attention components
-        self.query_proj = nn.Linear(in_dim, hidden_dim)
-        self.key_proj = nn.Linear(in_dim, hidden_dim)
-        self.value_proj = nn.Linear(in_dim, hidden_dim)
+        # Add input projection layer
+        self.input_proj = nn.Linear(feature_dim, hidden_dim)  # Add this line
 
-        # Edge weighting
+        # Rest of the initialization remains the same
+        self.query_proj = nn.Linear(feature_dim, hidden_dim)
+        self.key_proj = nn.Linear(feature_dim, hidden_dim)
+        self.value_proj = nn.Linear(feature_dim, hidden_dim)
+
         self.edge_weight = nn.Sequential(
             nn.Linear(2, hidden_dim),
             nn.ReLU(),
@@ -36,7 +34,6 @@ class GraphLayer(nn.Module):
             nn.Sigmoid()
         )
 
-        # Output transformation
         self.output_transform = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -44,7 +41,6 @@ class GraphLayer(nn.Module):
             nn.Dropout(dropout)
         )
 
-        # Layer norm and dropout
         self.norm1 = nn.LayerNorm(hidden_dim)
         self.norm2 = nn.LayerNorm(hidden_dim)
         self.dropout = nn.Dropout(dropout)
@@ -55,48 +51,37 @@ class GraphLayer(nn.Module):
             area_matrix: torch.Tensor,
             co_occurrence: torch.Tensor
     ) -> torch.Tensor:
-        """
-        Forward pass
-
-        Args:
-            x: Node features [batch_size, num_diseases, in_dim]
-            area_matrix: Region areas [batch_size, num_diseases]
-            co_occurrence: Disease co-occurrence matrix [num_diseases, num_diseases]
-        """
         batch_size = x.size(0)
         device = x.device
 
-        # Project inputs
-        q = self.query_proj(x)  # [B, N, H]
-        k = self.key_proj(x)  # [B, N, H]
-        v = self.value_proj(x)  # [B, N, H]
+        # Reshape input if needed
+        if x.shape[-1] != self.feature_dim:
+            x = x.transpose(-1, -2)
 
-        # Compute attention scores
-        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (self.hidden_dim ** 0.5)  # [B, N, N]
+        # Project input for residual connection
+        x_proj = self.input_proj(x)  # Add this line
 
-        # Compute edge weights based on area and co-occurrence
+        # Rest of the forward pass remains the same
+        q = self.query_proj(x)
+        k = self.key_proj(x)
+        v = self.value_proj(x)
+
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (self.hidden_dim ** 0.5)
+
         edge_inputs = torch.stack([
             area_matrix.unsqueeze(-1).expand(-1, -1, self.num_diseases),
             co_occurrence.unsqueeze(0).expand(batch_size, -1, -1)
-        ], dim=-1)  # [B, N, N, 2]
+        ], dim=-1)
 
-        edge_weights = self.edge_weight(edge_inputs).squeeze(-1)  # [B, N, N]
-
-        # Apply edge weights to attention scores
+        edge_weights = self.edge_weight(edge_inputs).squeeze(-1)
         attn_scores = attn_scores * edge_weights
-
-        # Normalize attention scores
         attn_probs = F.softmax(attn_scores, dim=-1)
         attn_probs = self.dropout(attn_probs)
 
-        # Compute output
-        out = torch.matmul(attn_probs, v)  # [B, N, H]
-        out = self.norm1(out + x)  # Residual connection
-
-        # Output transformation
+        out = torch.matmul(attn_probs, v)
+        out = self.norm1(out)
         out = self.output_transform(out)
-        out = self.norm2(out)
+        out = self.norm2(out + x_proj)  # Now x_proj is defined
 
         return out
-
 
