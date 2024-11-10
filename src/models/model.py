@@ -22,9 +22,11 @@ class GraphAugmentedViT(nn.Module):
             'Edema', 'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
         ]
 
+
         # Initialize ViT with the correct weights
         self.vit = models.vit_b_16(weights=models.ViT_B_16_Weights.IMAGENET1K_V1)
-        self.vit.heads = nn.Identity()  # Remove classification head
+        # Remove classification head but keep other components
+        self.vit.heads = nn.Identity()
 
         if pretrained_path:
             state_dict = torch.load(pretrained_path, map_location='cpu')
@@ -144,9 +146,22 @@ class GraphAugmentedViT(nn.Module):
                                             align_corners=False
                                         )
 
+                                        # Extract features using ViT's encoder
                                         with torch.no_grad():
-                                            features = self.vit.forward_features(region)
-                                        box_features.append(features.mean(1))
+                                            # Get the encoder output before the classification head
+                                            x = self.vit.patch_embed(region)
+                                            batch_class_token = self.vit.cls_token.expand(x.shape[0], -1, -1)
+                                            x = torch.cat((batch_class_token, x), dim=1)
+                                            x = self.vit.pos_drop(x + self.vit.pos_embed)
+
+                                            # Pass through transformer blocks
+                                            for blk in self.vit.blocks:
+                                                x = blk(x)
+
+                                            x = self.vit.norm(x)
+                                            features = x[:, 0]  # Take CLS token features
+
+                                        box_features.append(features)
                                         total_area += (y2 - y1) * (x2 - x1)
 
                             except Exception as e:
@@ -163,6 +178,7 @@ class GraphAugmentedViT(nn.Module):
                 continue
 
         return region_features, area_matrix
+
 
 
     def forward(self, images, batch_data=None):
