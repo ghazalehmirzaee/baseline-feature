@@ -263,14 +263,14 @@ def main():
     with open(args.config) as f:
         config = yaml.safe_load(f)
 
-
-    config['dataset'].update({
-        'data_dir': args.data_dir,
-        'train_csv': f"{args.data_dir}/train_list.txt",
-        'val_csv': f"{args.data_dir}/val_list.txt",
-        'test_csv': f"{args.data_dir}/test_list.txt",
-        'image_dir': f"{args.data_dir}/images"
-    })
+    #
+    # config['dataset'].update({
+    #     'data_dir': args.data_dir,
+    #     'train_csv': f"{args.data_dir}/train_list.txt",
+    #     'val_csv': f"{args.data_dir}/val_list.txt",
+    #     'test_csv': f"{args.data_dir}/test_list.txt",
+    #     'image_dir': f"{args.data_dir}/images"
+    # })
 
     # Create data loaders
     train_loader, val_loader, test_loader = get_data_loaders(config)

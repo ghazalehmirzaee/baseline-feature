@@ -19,7 +19,7 @@ dataset:
   train_csv: "/users/gm00051/ChestX-ray14/labels/train_list.txt"
   val_csv: "/users/gm00051/ChestX-ray14/labels/val_list.txt"
   test_csv: "/users/gm00051/ChestX-ray14/labels/test_list.txt"
-  image_dir: "/users/gm00051/ChestX-ray14/images" 
+  image_dir: "/users/gm00051/ChestX-ray14/images"
 
   classes: [
     'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass',
