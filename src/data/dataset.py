@@ -30,7 +30,16 @@ class ChestXrayDataset(Dataset):
 
         # Get bounding box if available
         img_name = os.path.basename(image_path)
-        bbox = self.bbox_data.get(img_name, {})
+        bbox_info = {}
+        if img_name in self.bbox_data:
+            for disease in self.diseases:
+                if disease in self.bbox_data[img_name]:
+                    bbox_info[disease] = self.bbox_data[img_name][disease]
+                else:
+                    bbox_info[disease] = []
+        else:
+            # Initialize empty lists for all diseases if no bbox data
+            bbox_info = {disease: [] for disease in self.diseases}
 
         # Apply transformations
         if self.transform:
@@ -39,7 +48,7 @@ class ChestXrayDataset(Dataset):
         return {
             'image': image,
             'labels': labels,
-            'bbox': bbox,
+            'bbox': bbox_info,
             'image_path': image_path,
             'image_name': img_name
         }

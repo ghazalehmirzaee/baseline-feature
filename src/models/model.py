@@ -92,6 +92,7 @@ class GraphAugmentedViT(nn.Module):
         self.final_classifier = self.final_classifier.to(device)
         return self
 
+
     def extract_regions(self, images, batch_data):
         """Extract and process regions based on bounding box data"""
         batch_size = images.size(0)
@@ -108,63 +109,63 @@ class GraphAugmentedViT(nn.Module):
         for b in range(batch_size):
             try:
                 # Get bbox data for this image
-                bbox_info = batch_data['bbox'][b]
+                bbox_info = batch_data['bbox'][b]  # Now contains all diseases with empty lists for no boxes
 
                 # Process each disease
                 for disease_idx, disease_name in enumerate(self.diseases):
-                    if disease_name in bbox_info:
-                        boxes = bbox_info[disease_name]
-                        if not boxes:
+                    boxes = bbox_info[disease_name]  # This will always exist, might be empty list
+                    if not boxes:  # Skip if no boxes
+                        continue
+
+                    # Process boxes for this disease
+                    box_features = []
+                    total_area = 0
+
+                    for box in boxes:
+                        try:
+                            x1, y1, w, h = map(float, box)
+                            x2, y2 = x1 + w, y1 + h
+
+                            # Add padding
+                            padding = min(0.1, 50 / max(1, (w * h) ** 0.5))
+                            pad_w = int(w * padding)
+                            pad_h = int(h * padding)
+
+                            # Ensure coordinates are within image bounds
+                            x1 = max(0, int(x1 - pad_w))
+                            y1 = max(0, int(y1 - pad_h))
+                            x2 = min(images.size(3), int(x2 + pad_w))
+                            y2 = min(images.size(2), int(y2 + pad_h))
+
+                            if x2 > x1 and y2 > y1:  # Valid region
+                                region = images[b:b + 1, :, y1:y2, x1:x2].to(device)
+                                region = F.interpolate(
+                                    region,
+                                    size=(224, 224),
+                                    mode='bilinear',
+                                    align_corners=False
+                                )
+
+                                with torch.no_grad():
+                                    features = self.vit.forward_features(region)
+                                box_features.append(features.mean(1))
+                                total_area += (y2 - y1) * (x2 - x1)
+
+                        except Exception as e:
+                            print(f"Error processing box {disease_name}: {str(e)}")
                             continue
 
-                        # Process boxes for this disease
-                        box_features = []
-                        total_area = 0
-
-                        for box in boxes:
-                            try:
-                                x1, y1, w, h = map(float, box)
-                                x2, y2 = x1 + w, y1 + h
-
-                                # Add padding
-                                padding = min(0.1, 50 / max(1, (w * h) ** 0.5))
-                                pad_w = int(w * padding)
-                                pad_h = int(h * padding)
-
-                                # Ensure coordinates are within image bounds
-                                x1 = max(0, int(x1 - pad_w))
-                                y1 = max(0, int(y1 - pad_h))
-                                x2 = min(images.size(3), int(x2 + pad_w))
-                                y2 = min(images.size(2), int(y2 + pad_h))
-
-                                if x2 > x1 and y2 > y1:  # Valid region
-                                    region = images[b:b + 1, :, y1:y2, x1:x2].to(device)
-                                    region = F.interpolate(
-                                        region,
-                                        size=(224, 224),
-                                        mode='bilinear',
-                                        align_corners=False
-                                    )
-
-                                    with torch.no_grad():
-                                        features = self.vit.forward_features(region)
-                                    box_features.append(features.mean(1))
-                                    total_area += (y2 - y1) * (x2 - x1)
-
-                            except Exception as e:
-                                print(f"Error processing box: {str(e)}")
-                                continue
-
-                        if box_features:
-                            features_stack = torch.stack(box_features).to(device)
-                            region_features[b, disease_idx] = features_stack.mean(0)
-                            area_matrix[b, disease_idx] = total_area
+                    if box_features:
+                        features_stack = torch.stack(box_features).to(device)
+                        region_features[b, disease_idx] = features_stack.mean(0)
+                        area_matrix[b, disease_idx] = total_area
 
             except Exception as e:
                 print(f"Error processing batch item {b}: {str(e)}")
                 continue
 
         return region_features, area_matrix
+
 
     def forward(self, images, batch_data=None):
         """Forward pass"""
