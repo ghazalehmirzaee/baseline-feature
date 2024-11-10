@@ -5,9 +5,6 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import cv2
-from PIL import Image
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
 import logging
 
 
@@ -17,128 +14,66 @@ class ChestXrayDataset(Dataset):
 
         # Load CSV file
         try:
-            self.df = pd.read_csv(csv_path)
+            # Read space-delimited CSV with custom column names
+            self.df = pd.read_csv(
+                csv_path,
+                delimiter=' ',  # Space-delimited
+                header=None,  # No header in the file
+                names=['Image_Index'] + [f'label_{i}' for i in range(14)]  # Column names
+            )
             self.logger.info(f"Loaded dataset from {csv_path} with {len(self.df)} samples")
         except Exception as e:
-            self.logger.error(f"Error loading CSV file: {e}")
+            self.logger.error(f"Error loading CSV file {csv_path}: {e}")
             raise
 
         self.image_dir = Path(image_dir)
-        self.transform = transform or self._get_default_transforms(phase)
+        self.transform = transform
         self.phase = phase
 
         # Load bounding box annotations if provided
         self.bb_data = None
-        if bb_file is not None:
+        if bb_file is not None and Path(bb_file).exists():
             try:
-                self.bb_data = pd.read_csv(bb_file, header=0, names=[
-                    'Image Index', 'Finding Label', 'x', 'y', 'w', 'h'
-                ])
-                # Convert coordinate columns to float
-                coord_cols = ['x', 'y', 'w', 'h']
-                for col in coord_cols:
-                    self.bb_data[col] = pd.to_numeric(self.bb_data[col], errors='coerce')
+                # Read bbox data
+                self.bb_data = pd.read_csv(bb_file, header=0)
                 self.logger.info(f"Loaded {len(self.bb_data)} bounding box annotations")
             except Exception as e:
-                self.logger.warning(f"Error loading bounding box annotations: {e}")
+                self.logger.warning(f"Error loading bounding box annotations from {bb_file}: {e}")
 
-        # Disease names in order
+        # Disease names
         self.disease_names = [
             'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass',
             'Nodule', 'Pneumonia', 'Pneumothorax', 'Consolidation', 'Edema',
             'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
         ]
 
-    def _get_default_transforms(self, phase):
-        if phase == 'train':
-            return A.Compose([
-                A.RandomResizedCrop(height=224, width=224, scale=(0.8, 1.0)),
-                A.HorizontalFlip(p=0.5),
-                A.RandomBrightnessContrast(p=0.2),
-                A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=10, p=0.2),
-                A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                ToTensorV2(),
-            ])
-        else:
-            return A.Compose([
-                A.Resize(256, 256),
-                A.CenterCrop(224, 224),
-                A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                ToTensorV2(),
-            ])
-
-    def _get_bounding_boxes(self, image_id):
-        """Get bounding box annotations for an image."""
-        if self.bb_data is None:
-            return None
-
-        # Get all bounding boxes for this image
-        image_bbs = self.bb_data[self.bb_data['Image Index'] == image_id]
-        if len(image_bbs) == 0:
-            return None
-
-        bboxes = []
-        labels = []
-        areas = []
-
-        for _, row in image_bbs.iterrows():
-            try:
-                # Get coordinates
-                x = float(row['x'])
-                y = float(row['y'])
-                w = float(row['w'])
-                h = float(row['h'])
-
-                # Get disease label
-                disease = row['Finding Label']
-                if disease not in self.disease_names:
-                    self.logger.warning(f"Unknown disease label: {disease}")
-                    continue
-
-                disease_idx = self.disease_names.index(disease)
-
-                # Append to lists
-                bboxes.append([x, y, w, h])
-                labels.append(disease_idx)
-                areas.append(w * h)
-
-            except Exception as e:
-                self.logger.warning(f"Error processing bounding box: {str(e)}")
-                continue
-
-        if not bboxes:
-            return None
-
-        return {
-            'boxes': torch.tensor(bboxes, dtype=torch.float32),
-            'labels': torch.tensor(labels, dtype=torch.long),
-            'areas': torch.tensor(areas, dtype=torch.float32)
-        }
-
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx):
         try:
-            # Get image ID and label
+            # Get image ID and labels
             row = self.df.iloc[idx]
-            image_id = row[0]  # First column is image ID
+            image_id = row['Image_Index']
 
             # Load image
             image_path = self.image_dir / image_id
             if not image_path.exists():
+                self.logger.error(f"Image not found: {image_path}")
                 raise FileNotFoundError(f"Image not found: {image_path}")
 
             image = cv2.imread(str(image_path))
             if image is None:
+                self.logger.error(f"Failed to load image: {image_path}")
                 raise ValueError(f"Failed to load image: {image_path}")
+
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-            # Get labels
-            labels = torch.zeros(len(self.disease_names), dtype=torch.float32)
-            finding = row[1]  # Second column is the finding label
-            if finding in self.disease_names:
-                labels[self.disease_names.index(finding)] = 1
+            # Get labels (all columns except Image_Index)
+            labels = torch.tensor(
+                [row[f'label_{i}'] for i in range(14)],
+                dtype=torch.float32
+            )
 
             # Apply transforms
             if self.transform:
@@ -146,13 +81,58 @@ class ChestXrayDataset(Dataset):
                 image = transformed['image']
 
             # Get bounding boxes if available
-            bboxes = self._get_bounding_boxes(image_id)
+            bboxes = self._get_bounding_boxes(image_id) if self.bb_data is not None else None
 
             return image, labels, bboxes
 
         except Exception as e:
-            self.logger.error(f"Error processing sample {idx}: {str(e)}")
+            self.logger.error(f"Error processing sample {idx} ({image_id}): {str(e)}")
             raise
+
+    def _get_bounding_boxes(self, image_id):
+        """Get bounding box annotations for an image."""
+        try:
+            # Get all bounding boxes for this image
+            image_bbs = self.bb_data[self.bb_data['Image Index'] == image_id]
+            if len(image_bbs) == 0:
+                return None
+
+            bboxes = []
+            labels = []
+            areas = []
+
+            for _, row in image_bbs.iterrows():
+                try:
+                    # Get coordinates
+                    x = float(row['Bbox [x'].strip('['))  # Remove '[' from x
+                    y = float(row['y'])
+                    w = float(row['w'])
+                    h = float(row['h'].strip(']'))  # Remove ']' from h
+
+                    # Get disease label
+                    disease = row['Finding Label']
+                    if disease in self.disease_names:
+                        disease_idx = self.disease_names.index(disease)
+                        bboxes.append([x, y, w, h])
+                        labels.append(disease_idx)
+                        areas.append(w * h)
+
+                except Exception as e:
+                    self.logger.warning(f"Error processing bounding box for {image_id}: {str(e)}")
+                    continue
+
+            if not bboxes:
+                return None
+
+            return {
+                'boxes': torch.tensor(bboxes, dtype=torch.float32),
+                'labels': torch.tensor(labels, dtype=torch.long),
+                'areas': torch.tensor(areas, dtype=torch.float32)
+            }
+
+        except Exception as e:
+            self.logger.warning(f"Error getting bounding boxes for {image_id}: {str(e)}")
+            return None
 
 
 def get_data_loaders(config):
@@ -181,13 +161,15 @@ def get_data_loaders(config):
         phase='test'
     )
 
-    # Create data loaders
+    # Create data loaders with error handling
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=config['training']['batch_size'],
         shuffle=True,
         num_workers=config['training'].get('num_workers', 4),
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=True,
+        drop_last=True
     )
 
     val_loader = torch.utils.data.DataLoader(
@@ -195,7 +177,8 @@ def get_data_loaders(config):
         batch_size=config['training']['batch_size'],
         shuffle=False,
         num_workers=config['training'].get('num_workers', 4),
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=True
     )
 
     test_loader = torch.utils.data.DataLoader(
@@ -203,9 +186,9 @@ def get_data_loaders(config):
         batch_size=config['training']['batch_size'],
         shuffle=False,
         num_workers=config['training'].get('num_workers', 4),
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=True
     )
 
     return train_loader, val_loader, test_loader
-
 
