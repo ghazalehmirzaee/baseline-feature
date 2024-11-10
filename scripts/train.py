@@ -10,6 +10,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from tqdm import tqdm
 from pathlib import Path
+import logging
 
 from models.feature_graph import FeatureGraphModel
 from models.loss import MultiComponentLoss
@@ -18,8 +19,6 @@ from utils.checkpointing import save_checkpoint, load_checkpoint
 from utils.logger import setup_logging
 from data.datasets import get_data_loaders
 
-
-# scripts/train.py (relevant section)
 
 class Trainer:
     def __init__(self, config):
@@ -63,6 +62,39 @@ class Trainer:
         except Exception as e:
             self.logger.error(f"Error loading checkpoint: {str(e)}")
             raise RuntimeError(f"Failed to load checkpoint: {str(e)}")
+
+    def _setup_training(self):
+        """Setup training components like optimizer, scheduler, etc."""
+        # Optimizer
+        self.optimizer = AdamW(
+            self.model.parameters(),
+            lr=self.config['training']['learning_rate'],
+            weight_decay=self.config['training']['weight_decay']
+        )
+
+        # Learning rate scheduler
+        self.scheduler = CosineAnnealingWarmRestarts(
+            self.optimizer,
+            T_0=self.config['training']['warmup_epochs'],
+            T_mult=2
+        )
+
+        # Initialize best metrics
+        self.best_metrics = {
+            'mean_auc': 0.0,
+            'epoch': 0,
+            'metrics': None
+        }
+
+        # Early stopping
+        self.patience = self.config['training'].get('patience', 10)
+        self.patience_counter = 0
+
+        # Create checkpoint directory
+        checkpoint_dir = Path(self.config['training']['checkpoint_dir'])
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        self.logger.info("Training setup completed")
 
     def _setup_model(self):
         try:
