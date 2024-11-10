@@ -2,7 +2,7 @@
 logging:
   level: INFO
   feature_shapes: true
-  
+
 dataset:
   name: "NIH-ChestXray14"
   image_size: 224
