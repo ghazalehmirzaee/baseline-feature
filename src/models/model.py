@@ -12,8 +12,17 @@ from src.models.graph import GraphLayer
 
 class GraphAugmentedViT(nn.Module):
     """
-        Multi-stage model combining pre-trained ViT with graph-based refinement
+    Graph-augmented Vision Transformer for multi-label chest X-ray classification.
+
+    Args:
+        pretrained_path (str): Path to pretrained ViT model weights
+        num_diseases (int): Number of disease classes
+        feature_dim (int): Dimension of input features from ViT
+        hidden_dim (int): Dimension of hidden layers in graph component
+        graph_layers (int): Number of graph neural network layers
+        dropout (float): Dropout probability
     """
+    
     def __init__(
             self,
             pretrained_path: str,
@@ -43,7 +52,7 @@ class GraphAugmentedViT(nn.Module):
         # Graph-based refinement components
         self.graph_layers = nn.ModuleList([
             GraphLayer(
-                in_dim=feature_dim,
+                feature_dim=feature_dim,  # Changed from in_dim to feature_dim
                 hidden_dim=hidden_dim,
                 num_diseases=num_diseases,
                 dropout=dropout
@@ -87,6 +96,17 @@ class GraphAugmentedViT(nn.Module):
         # Initialize co-occurrence tracking
         self.register_buffer('co_occurrence_matrix', torch.zeros(num_diseases, num_diseases))
         self.register_buffer('co_occurrence_count', torch.zeros(num_diseases, num_diseases))
+
+        # Add validation
+        if feature_dim <= 0:
+            raise ValueError("feature_dim must be positive")
+        if hidden_dim <= 0:
+            raise ValueError("hidden_dim must be positive")
+        if graph_layers <= 0:
+            raise ValueError("graph_layers must be positive")
+        if not 0 <= dropout < 1:
+            raise ValueError("dropout must be between 0 and 1")
+
 
     def load_pretrained_model(self, checkpoint_path: str):
         """Load pre-trained ViT model with correct architecture"""
