@@ -4,7 +4,11 @@ import argparse
 import yaml
 import torch
 from torch.utils.data import DataLoader
+import os
+import pandas as pd
+import numpy as np
 from src.data.dataset import ChestXrayDataset
+from src.data.transforms import get_train_transforms, get_val_transforms
 from src.models.model import GraphAugmentedViT
 from src.training.loss import MultiComponentLoss
 from src.training.trainer import Trainer
@@ -16,6 +20,76 @@ def parse_args():
     return parser.parse_args()
 
 
+def load_dataset_from_txt(image_dir, label_file):
+    """Load dataset from txt file containing image paths and labels"""
+    images = []
+    labels = []
+
+    disease_names = [
+        'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration',
+        'Mass', 'Nodule', 'Pneumonia', 'Pneumothorax', 'Consolidation',
+        'Edema', 'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
+    ]
+
+    with open(label_file, 'r') as f:
+        lines = f.readlines()
+
+    for line in lines:
+        parts = line.strip().split()
+        if len(parts) >= 2:  # Ensure line has image path and at least one label
+            img_path = os.path.join(image_dir, parts[0])
+            if os.path.exists(img_path):
+                images.append(img_path)
+
+                # Create label vector
+                label_vector = np.zeros(len(disease_names))
+                findings = parts[1:]  # All elements after image path are labels
+                for finding in findings:
+                    if finding in disease_names:
+                        label_vector[disease_names.index(finding)] = 1
+                labels.append(label_vector)
+
+    return images, np.array(labels)
+
+
+def load_bbox_data(bbox_file):
+    """Load bounding box annotations"""
+    bbox_data = {}
+    if os.path.exists(bbox_file):
+        bbox_df = pd.read_csv(bbox_file)
+        for _, row in bbox_df.iterrows():
+            img_name = row['Image Index']
+            if img_name not in bbox_data:
+                bbox_data[img_name] = {}
+            label = row['Finding Label']
+            if label not in bbox_data[img_name]:
+                bbox_data[img_name][label] = []
+            bbox_data[img_name][label].append([
+                row['Bbox_x'], row['Bbox_y'],
+                row['Bbox_w'], row['Bbox_h']
+            ])
+    return bbox_data
+
+
+def compute_class_weights(labels):
+    """Compute class weights based on label distribution"""
+    num_samples = len(labels)
+    pos_counts = np.sum(labels, axis=0)
+    neg_counts = num_samples - pos_counts
+
+    # Compute weights using median frequency balancing
+    pos_weights = np.median(pos_counts) / pos_counts
+    neg_weights = np.median(neg_counts) / neg_counts
+
+    # Combine positive and negative weights
+    weights = np.maximum(pos_weights, neg_weights)
+
+    # Normalize weights
+    weights = weights / np.min(weights)
+
+    return torch.FloatTensor(weights)
+
+
 def main():
     args = parse_args()
 
@@ -25,47 +99,73 @@ def main():
 
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+
+    # Load datasets
+    print("Loading datasets...")
+    train_images, train_labels = load_dataset_from_txt(
+        config['train_paths'],
+        config['train_labels']
+    )
+
+    val_images, val_labels = load_dataset_from_txt(
+        config['val_paths'],
+        config['val_labels']
+    )
+
+    # Load bounding box data
+    print("Loading bounding box annotations...")
+    bbox_data = load_bbox_data(config['bbox_data_path'])
+
+    # Compute class weights
+    print("Computing class weights...")
+    class_weights = compute_class_weights(train_labels)
+    print("Class weights:", class_weights.numpy())
 
     # Create datasets
     train_dataset = ChestXrayDataset(
-        image_paths=config['train_paths'],
-        labels=config['train_labels'],
-        bbox_data=config['bbox_data'],
-        transform=config['train_transform']
+        image_paths=train_images,
+        labels=train_labels,
+        bbox_data=bbox_data,
+        transform=get_train_transforms()
     )
 
     val_dataset = ChestXrayDataset(
-        image_paths=config['val_paths'],
-        labels=config['val_labels'],
-        bbox_data=config['bbox_data'],
-        transform=config['val_transform']
+        image_paths=val_images,
+        labels=val_labels,
+        bbox_data=bbox_data,
+        transform=get_val_transforms()
     )
 
     # Create dataloaders
+    print("Creating dataloaders...")
     train_loader = DataLoader(
         train_dataset,
-        batch_size=config['batch_size'],
+        batch_size=config['training']['batch_size'],
         shuffle=True,
-        num_workers=config['num_workers']
+        num_workers=config['training']['num_workers'],
+        pin_memory=True
     )
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=config['batch_size'],
+        batch_size=config['training']['batch_size'],
         shuffle=False,
-        num_workers=config['num_workers']
+        num_workers=config['training']['num_workers'],
+        pin_memory=True
     )
 
     # Create model
+    print("Creating model...")
     model = GraphAugmentedViT(
         num_diseases=14,
-        pretrained_path=config['pretrained_path']
+        pretrained_path=config['model']['pretrained_path']
     )
 
     # Create loss function
     criterion = MultiComponentLoss(
         weights=config['loss_weights'],
-        class_weights=config['class_weights']
+        class_weights=class_weights
     )
 
     # Create trainer
@@ -74,15 +174,15 @@ def main():
         criterion=criterion,
         train_loader=train_loader,
         val_loader=val_loader,
-        config=config,
+        config=config['training'],
         device=device
     )
 
     # Start training
-    trainer.train(num_epochs=config['num_epochs'])
+    print("Starting training...")
+    trainer.train(num_epochs=config['training']['num_epochs'])
 
 
 if __name__ == '__main__':
     main()
 
-    

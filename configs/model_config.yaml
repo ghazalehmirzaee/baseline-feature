@@ -2,6 +2,9 @@
 train_paths: "/users/gm00051/ChestX-ray14/categorized_images/train"
 val_paths: "/users/gm00051/ChestX-ray14/categorized_images/val"
 test_paths: "/users/gm00051/ChestX-ray14/categorized_images/test"
+train_labels: "/users/gm00051/ChestX-ray14/labels/train_list.txt"
+val_labels: "/users/gm00051/ChestX-ray14/labels/val_list.txt"
+test_labels: "/users/gm00051/ChestX-ray14/labels/test_list.txt"
 bbox_data_path: "/users/gm00051/ChestX-ray14/labels/BBox_List_2017.csv"
 
 # Model configuration

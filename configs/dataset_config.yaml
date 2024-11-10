@@ -26,18 +26,18 @@ diseases:
 
 # Class weights for handling imbalance
 class_weights:
-  Atelectasis: 1.0
-  Cardiomegaly: 2.5
-  Effusion: 1.2
-  Infiltration: 0.8
-  Mass: 2.0
-  Nodule: 2.2
-  Pneumonia: 2.8
-  Pneumothorax: 2.3
-  Consolidation: 2.4
-  Edema: 2.6
-  Emphysema: 3.0
-  Fibrosis: 3.2
-  Pleural_Thickening: 2.7
-  Hernia: 4.0
+  Atelectasis: 1.90
+  Cardiomegaly: 8.46
+  Effusion: 1.61
+  Infiltration: 1.00
+  Mass: 4.03
+  Nodule: 3.65
+  Pneumonia: 17.08
+  Pneumothorax: 4.35
+  Consolidation: 4.97
+  Edema: 9.79
+  Emphysema: 9.19
+  Fibrosis: 14.39
+  Pleural_Thickening: 7.21
+  Hernia: 117.24
 
