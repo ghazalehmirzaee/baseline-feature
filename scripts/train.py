@@ -105,6 +105,9 @@ def main():
     print("Computing class weights...")
     class_weights = compute_class_weights(train_labels)
 
+    # Print class weights for verification
+    print("Class weights:", class_weights)
+
     # Create datasets
     train_dataset = ChestXrayDataset(
         train_images,

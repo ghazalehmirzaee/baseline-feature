@@ -235,14 +235,14 @@ class GraphAugmentedViT(nn.Module):
     def forward(self, images: torch.Tensor, batch_data: Optional[Dict] = None) -> torch.Tensor:
         """Forward pass"""
         # Print shapes for debugging
-        print(f"Input image shape: {images.shape}")
+        # print(f"Input image shape: {images.shape}")
 
         device = images.device
         batch_size = images.size(0)
 
         # Extract global features
         global_features = self.extract_global_features(images)  # [B, 768]
-        print(f"Global features shape: {global_features.shape}")
+        # print(f"Global features shape: {global_features.shape}")
 
         global_features = self.global_projection(global_features)  # [B, 512]
 
@@ -261,8 +261,8 @@ class GraphAugmentedViT(nn.Module):
                 batch_size, self.num_diseases
             ).to(device)
 
-        print(f"Region features shape: {region_features.shape}")
-        print(f"Area matrix shape: {area_matrix.shape}")
+        # print(f"Region features shape: {region_features.shape}")
+        # print(f"Area matrix shape: {area_matrix.shape}")
 
         # Apply graph layers
         graph_features = region_features
