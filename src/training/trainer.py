@@ -30,8 +30,8 @@ class Trainer:
         # Optimizer
         self.optimizer = optim.AdamW(
             model.parameters(),
-            lr=config.learning_rate,
-            weight_decay=config.weight_decay
+            lr=config['learning_rate'],  # Access as dictionary
+            weight_decay=config['weight_decay']
         )
 
         # Learning rate scheduler
@@ -45,14 +45,14 @@ class Trainer:
 
         # Early stopping
         self.best_val_auc = 0
-        self.patience = config.patience
+        self.patience = config['patience']  # Access as dictionary
         self.patience_counter = 0
 
         # Initialize wandb
         wandb.init(
             project="chest-xray-classification",
             config=config,
-            name=config.run_name
+            name=config.get('run_name', 'graph-augmented-vit')
         )
 
     def train_epoch(self):

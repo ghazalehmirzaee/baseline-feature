@@ -75,17 +75,26 @@ def compute_class_weights(labels):
     """Compute class weights based on label distribution"""
     num_samples = len(labels)
     pos_counts = np.sum(labels, axis=0)
-    neg_counts = num_samples - pos_counts
 
-    # Compute weights using median frequency balancing
-    pos_weights = np.median(pos_counts) / pos_counts
-    neg_weights = np.median(neg_counts) / neg_counts
+    # Ensure no zero counts by adding a small epsilon
+    eps = 1e-5
+    pos_counts = pos_counts + eps
+    neg_counts = num_samples - pos_counts + eps
 
-    # Combine positive and negative weights
-    weights = np.maximum(pos_weights, neg_weights)
+    # Compute weights using positive/negative ratio
+    ratios = np.maximum(pos_counts / neg_counts, neg_counts / pos_counts)
+    weights = ratios / np.min(ratios)  # Normalize so minimum weight is 1.0
 
-    # Normalize weights
-    weights = weights / np.min(weights)
+    # Print distribution for debugging
+    disease_names = [
+        'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration',
+        'Mass', 'Nodule', 'Pneumonia', 'Pneumothorax', 'Consolidation',
+        'Edema', 'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
+    ]
+
+    print("\nClass Distribution:")
+    for i, disease in enumerate(disease_names):
+        print(f"{disease:20} Pos: {pos_counts[i] - eps:5d} Neg: {neg_counts[i] - eps:5d} Weight: {weights[i]:.2f}")
 
     return torch.FloatTensor(weights)
 
