@@ -4,23 +4,17 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 from PIL import Image
+import os
 
+# src/data/dataset.py
 
 class ChestXrayDataset(Dataset):
     def __init__(self, image_paths, labels, bbox_data=None, transform=None):
-        """
-        Args:
-            image_paths (list): List of image file paths
-            labels (np.ndarray): Labels for each image (N x 14)
-            bbox_data (dict): Dictionary mapping image paths to bounding box data
-            transform: Image transformations
-        """
         self.image_paths = image_paths
         self.labels = torch.FloatTensor(labels)
-        self.bbox_data = bbox_data
+        self.bbox_data = bbox_data or {}  # Initialize as empty dict if None
         self.transform = transform
 
-        # Disease names for reference
         self.diseases = [
             'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration',
             'Mass', 'Nodule', 'Pneumonia', 'Pneumothorax', 'Consolidation',
@@ -32,14 +26,13 @@ class ChestXrayDataset(Dataset):
 
     def __getitem__(self, idx):
         # Load image
-        image = Image.open(self.image_paths[idx]).convert('RGB')
+        image_path = self.image_paths[idx]
+        image = Image.open(image_path).convert('RGB')
         labels = self.labels[idx]
 
         # Get bounding box if available
-        bbox = None
-        if self.bbox_data is not None:
-            img_name = self.image_paths[idx].split('/')[-1]
-            bbox = self.bbox_data.get(img_name, None)
+        img_name = os.path.basename(image_path)
+        bbox = self.bbox_data.get(img_name, {})  # Return empty dict if no bbox
 
         # Apply transformations
         if self.transform:
@@ -49,7 +42,7 @@ class ChestXrayDataset(Dataset):
             'image': image,
             'labels': labels,
             'bbox': bbox,
-            'path': self.image_paths[idx]
+            'path': image_path
         }
 
         return sample

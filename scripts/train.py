@@ -20,38 +20,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_dataset_from_txt(image_dir, label_file):
-    """Load dataset from txt file containing image paths and labels"""
-    images = []
-    labels = []
-
-    disease_names = [
-        'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration',
-        'Mass', 'Nodule', 'Pneumonia', 'Pneumothorax', 'Consolidation',
-        'Edema', 'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
-    ]
-
-    with open(label_file, 'r') as f:
-        lines = f.readlines()
-
-    for line in lines:
-        parts = line.strip().split()
-        if len(parts) >= 2:  # Ensure line has image path and at least one label
-            img_path = os.path.join(image_dir, parts[0])
-            if os.path.exists(img_path):
-                images.append(img_path)
-
-                # Create label vector
-                label_vector = np.zeros(len(disease_names))
-                findings = parts[1:]  # All elements after image path are labels
-                for finding in findings:
-                    if finding in disease_names:
-                        label_vector[disease_names.index(finding)] = 1
-                labels.append(label_vector)
-
-    return images, np.array(labels)
-
-
 def load_bbox_data(bbox_file):
     """Load bounding box annotations"""
     bbox_data = {}
@@ -71,36 +39,57 @@ def load_bbox_data(bbox_file):
     return bbox_data
 
 
+def load_dataset_from_txt(image_dir, label_file):
+    """Load dataset from txt file"""
+    images = []
+    labels = []
+
+    with open(label_file, 'r') as f:
+        lines = f.readlines()
+
+    for line in lines:
+        parts = line.strip().split()
+        if len(parts) >= 15:  # Image name + 14 labels
+            img_path = os.path.join(image_dir, parts[0])
+            if os.path.exists(img_path):
+                images.append(img_path)
+                # Convert label strings to integers
+                label_vector = [int(x) for x in parts[1:15]]
+                labels.append(label_vector)
+
+    return images, np.array(labels)
+
+
 def compute_class_weights(labels):
     """Compute class weights based on label distribution"""
     num_samples = len(labels)
     pos_counts = np.sum(labels, axis=0)
+    neg_counts = num_samples - pos_counts
 
-    # Ensure no zero counts by adding a small epsilon
-    eps = 1e-5
-    pos_counts = pos_counts + eps
-    neg_counts = num_samples - pos_counts + eps
-
-    # Compute weights using positive/negative ratio
-    ratios = np.maximum(pos_counts / neg_counts, neg_counts / pos_counts)
-    weights = ratios / np.min(ratios)  # Normalize so minimum weight is 1.0
-
-    # Print distribution for debugging
     disease_names = [
         'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration',
         'Mass', 'Nodule', 'Pneumonia', 'Pneumothorax', 'Consolidation',
         'Edema', 'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
     ]
 
-    print("\nClass Distribution:")
-    print("-" * 75)
-    print(f"{'Disease':20} {'Positives':>10} {'Negatives':>10} {'Weight':>10}")
-    print("-" * 75)
+    # Compute weights
+    pos_ratios = pos_counts / neg_counts
+    min_ratio = np.min(pos_ratios)
+    weights = min_ratio / pos_ratios
+
+    print("\nDisease Distribution Analysis:")
+    print("-" * 80)
+    print(f"{'Disease':20} {'Count':>8} {'Percentage':>12} {'Pos/Neg Ratio':>15} {'Weight':>8}")
+    print("-" * 80)
 
     for i, disease in enumerate(disease_names):
-        print(f"{disease:20} {int(pos_counts[i] - eps):10d} {int(neg_counts[i] - eps):10d} {weights[i]:10.2f}")
+        count = pos_counts[i]
+        percentage = (count / num_samples) * 100
+        ratio = pos_ratios[i]
+        weight = weights[i]
+        print(f"{disease:20} {int(count):8d} {percentage:11.2f}% {ratio:14.3f} {weight:8.2f}")
 
-    print("-" * 75)
+    print("-" * 80)
     print(f"Total samples: {num_samples}")
 
     return torch.FloatTensor(weights)
@@ -201,4 +190,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
