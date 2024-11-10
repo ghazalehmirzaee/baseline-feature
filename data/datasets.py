@@ -11,6 +11,35 @@ from albumentations.pytorch import ToTensorV2
 from torchvision import transforms
 
 
+def custom_collate_fn(batch):
+    """Custom collate function to handle None values for bounding boxes."""
+    images = []
+    labels = []
+    bboxes = []
+
+    for item in batch:
+        images.append(item[0])
+        labels.append(item[1])
+        bboxes.append(item[2] if item[2] is not None else {
+            'boxes': torch.zeros((0, 4), dtype=torch.float32),
+            'labels': torch.zeros(0, dtype=torch.long),
+            'areas': torch.zeros(0, dtype=torch.float32)
+        })
+
+    # Stack images and labels
+    images = torch.stack(images, dim=0)
+    labels = torch.stack(labels, dim=0)
+
+    # Collate bounding boxes
+    collated_bboxes = {
+        'boxes': [b['boxes'] for b in bboxes],
+        'labels': [b['labels'] for b in bboxes],
+        'areas': [b['areas'] for b in bboxes]
+    }
+
+    return images, labels, collated_bboxes
+
+
 class ChestXrayDataset(Dataset):
     def __init__(self, csv_path, image_dir, bb_file=None, transform=None, phase='train'):
         self.logger = logging.getLogger(__name__)
@@ -187,7 +216,7 @@ class ChestXrayDataset(Dataset):
 
 
 def get_data_loaders(config):
-    """Create data loaders."""
+    """Create data loaders with custom collate function."""
     dataset_config = config['dataset']
 
     # Create datasets
@@ -212,7 +241,7 @@ def get_data_loaders(config):
         phase='test'
     )
 
-    # Create data loaders
+    # Create data loaders with custom collate function
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=config['training']['batch_size'],
@@ -220,7 +249,8 @@ def get_data_loaders(config):
         num_workers=config['training'].get('num_workers', 4),
         pin_memory=True,
         persistent_workers=True,
-        drop_last=True
+        drop_last=True,
+        collate_fn=custom_collate_fn  # Add custom collate function
     )
 
     val_loader = torch.utils.data.DataLoader(
@@ -229,7 +259,8 @@ def get_data_loaders(config):
         shuffle=False,
         num_workers=config['training'].get('num_workers', 4),
         pin_memory=True,
-        persistent_workers=True
+        persistent_workers=True,
+        collate_fn=custom_collate_fn  # Add custom collate function
     )
 
     test_loader = torch.utils.data.DataLoader(
@@ -238,8 +269,10 @@ def get_data_loaders(config):
         shuffle=False,
         num_workers=config['training'].get('num_workers', 4),
         pin_memory=True,
-        persistent_workers=True
+        persistent_workers=True,
+        collate_fn=custom_collate_fn  # Add custom collate function
     )
 
     return train_loader, val_loader, test_loader
+
 

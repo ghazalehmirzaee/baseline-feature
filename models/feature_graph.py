@@ -178,55 +178,82 @@ class FeatureGraphModel(nn.Module):
 
         return batch_graphs, batch_features
 
-    def forward(self, images: torch.Tensor, bboxes: Optional[Dict[str, torch.Tensor]] = None) -> torch.Tensor:
+    def forward(self, images: torch.Tensor, bboxes: Optional[Dict[str, list]] = None) -> torch.Tensor:
         """Forward pass of the model."""
         # Get baseline features
         batch_features = self.backbone(images)  # [B, D]
 
         if self.training and bboxes is not None and isinstance(bboxes, dict):
             try:
-                # Extract region features and build graph
-                region_features = self.extract_region_features(images, bboxes)
-                graphs, node_features = self.build_graph(region_features)
+                # Convert list of tensors to padded tensor
+                max_boxes = max(len(boxes) for boxes in bboxes['boxes'])
+                if max_boxes > 0:
+                    padded_boxes = torch.zeros(len(bboxes['boxes']), max_boxes, 4, device=images.device)
+                    padded_labels = torch.zeros(len(bboxes['labels']), max_boxes, device=images.device,
+                                                dtype=torch.long)
+                    padded_areas = torch.zeros(len(bboxes['areas']), max_boxes, device=images.device)
 
-                # Process each graph
-                graph_embeddings = []
-                for adj_matrix, features in zip(graphs, node_features):
-                    x = features
+                    # Pad each sample's boxes
+                    for i, (boxes, labels, areas) in enumerate(zip(bboxes['boxes'], bboxes['labels'], bboxes['areas'])):
+                        if len(boxes) > 0:
+                            padded_boxes[i, :len(boxes)] = boxes.to(images.device)
+                            padded_labels[i, :len(labels)] = labels.to(images.device)
+                            padded_areas[i, :len(areas)] = areas.to(images.device)
 
-                    # Apply GNN layers
-                    for layer in self.graph_layers:
-                        x = layer(x, adj_matrix)
-                        x = F.relu(x)
-                        x = F.dropout(x, p=self.config['model']['dropout_rate'], training=self.training)
+                    # Create padded bboxes dict
+                    padded_bboxes = {
+                        'boxes': padded_boxes,
+                        'labels': padded_labels,
+                        'areas': padded_areas
+                    }
 
-                    # Aggregate node embeddings
-                    graph_embedding = x.mean(dim=0)  # [D]
-                    graph_embeddings.append(graph_embedding)
+                    # Extract region features and build graph
+                    region_features = self.extract_region_features(images, padded_bboxes)
+                    graphs, node_features = self.build_graph(region_features)
 
-                if graph_embeddings:
-                    graph_embeddings = torch.stack(graph_embeddings)  # [B, D]
+                    # Process each graph
+                    graph_embeddings = []
+                    for adj_matrix, features in zip(graphs, node_features):
+                        x = features
+
+                        # Apply GNN layers
+                        for layer in self.graph_layers:
+                            x = layer(x, adj_matrix)
+                            x = F.relu(x)
+                            x = F.dropout(x, p=self.config['model']['dropout_rate'], training=self.training)
+
+                        # Aggregate node embeddings
+                        graph_embedding = x.mean(dim=0)  # [D]
+                        graph_embeddings.append(graph_embedding)
+
+                    if graph_embeddings:
+                        graph_embeddings = torch.stack(graph_embeddings)  # [B, D]
+                    else:
+                        graph_embeddings = torch.zeros(
+                            batch_features.shape[0],
+                            self.graph_hidden_dim,
+                            device=images.device
+                        )
                 else:
                     graph_embeddings = torch.zeros(
                         batch_features.shape[0],
                         self.graph_hidden_dim,
-                        device=batch_features.device
+                        device=images.device
                     )
 
             except Exception as e:
                 self.logger.error(f"Error in graph processing: {str(e)}")
-                # Fallback to zero embeddings
                 graph_embeddings = torch.zeros(
                     batch_features.shape[0],
                     self.graph_hidden_dim,
-                    device=batch_features.device
+                    device=images.device
                 )
         else:
             # During inference or when no BBs available
             graph_embeddings = torch.zeros(
                 batch_features.shape[0],
                 self.graph_hidden_dim,
-                device=batch_features.device
+                device=images.device
             )
 
         # Concatenate and fuse features
