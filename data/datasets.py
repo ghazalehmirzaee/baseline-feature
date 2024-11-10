@@ -8,11 +8,21 @@ import cv2
 from PIL import Image
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
+import logging
 
 
 class ChestXrayDataset(Dataset):
     def __init__(self, csv_path, image_dir, bb_file=None, transform=None, phase='train'):
-        self.df = pd.read_csv(csv_path)
+        self.logger = logging.getLogger(__name__)
+
+        # Load CSV file
+        try:
+            self.df = pd.read_csv(csv_path)
+            self.logger.info(f"Loaded dataset from {csv_path} with {len(self.df)} samples")
+        except Exception as e:
+            self.logger.error(f"Error loading CSV file: {e}")
+            raise
+
         self.image_dir = Path(image_dir)
         self.transform = transform or self._get_default_transforms(phase)
         self.phase = phase
@@ -20,9 +30,19 @@ class ChestXrayDataset(Dataset):
         # Load bounding box annotations if provided
         self.bb_data = None
         if bb_file is not None:
-            self.bb_data = pd.read_csv(bb_file)
+            try:
+                self.bb_data = pd.read_csv(bb_file, header=0, names=[
+                    'Image Index', 'Finding Label', 'x', 'y', 'w', 'h'
+                ])
+                # Convert coordinate columns to float
+                coord_cols = ['x', 'y', 'w', 'h']
+                for col in coord_cols:
+                    self.bb_data[col] = pd.to_numeric(self.bb_data[col], errors='coerce')
+                self.logger.info(f"Loaded {len(self.bb_data)} bounding box annotations")
+            except Exception as e:
+                self.logger.warning(f"Error loading bounding box annotations: {e}")
 
-        # Disease names
+        # Disease names in order
         self.disease_names = [
             'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass',
             'Nodule', 'Pneumonia', 'Pneumothorax', 'Consolidation', 'Edema',
@@ -52,7 +72,8 @@ class ChestXrayDataset(Dataset):
         if self.bb_data is None:
             return None
 
-        image_bbs = self.bb_data[self.bb_data['Image_Index'] == image_id]
+        # Get all bounding boxes for this image
+        image_bbs = self.bb_data[self.bb_data['Image Index'] == image_id]
         if len(image_bbs) == 0:
             return None
 
@@ -61,12 +82,32 @@ class ChestXrayDataset(Dataset):
         areas = []
 
         for _, row in image_bbs.iterrows():
-            x, y, w, h = row['Bbox_X'], row['Bbox_Y'], row['Bbox_W'], row['Bbox_H']
-            disease_idx = self.disease_names.index(row['Finding Label'])
+            try:
+                # Get coordinates
+                x = float(row['x'])
+                y = float(row['y'])
+                w = float(row['w'])
+                h = float(row['h'])
 
-            bboxes.append([x, y, w, h])
-            labels.append(disease_idx)
-            areas.append(w * h)
+                # Get disease label
+                disease = row['Finding Label']
+                if disease not in self.disease_names:
+                    self.logger.warning(f"Unknown disease label: {disease}")
+                    continue
+
+                disease_idx = self.disease_names.index(disease)
+
+                # Append to lists
+                bboxes.append([x, y, w, h])
+                labels.append(disease_idx)
+                areas.append(w * h)
+
+            except Exception as e:
+                self.logger.warning(f"Error processing bounding box: {str(e)}")
+                continue
+
+        if not bboxes:
+            return None
 
         return {
             'boxes': torch.tensor(bboxes, dtype=torch.float32),
@@ -78,30 +119,40 @@ class ChestXrayDataset(Dataset):
         return len(self.df)
 
     def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        image_id = row['Image_Index']
+        try:
+            # Get image ID and label
+            row = self.df.iloc[idx]
+            image_id = row[0]  # First column is image ID
 
-        # Load image
-        image_path = self.image_dir / image_id
-        image = cv2.imread(str(image_path))
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            # Load image
+            image_path = self.image_dir / image_id
+            if not image_path.exists():
+                raise FileNotFoundError(f"Image not found: {image_path}")
 
-        # Get labels
-        labels = torch.zeros(len(self.disease_names), dtype=torch.float32)
-        findings = row['Finding Labels'].split('|')
-        for finding in findings:
+            image = cv2.imread(str(image_path))
+            if image is None:
+                raise ValueError(f"Failed to load image: {image_path}")
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+            # Get labels
+            labels = torch.zeros(len(self.disease_names), dtype=torch.float32)
+            finding = row[1]  # Second column is the finding label
             if finding in self.disease_names:
                 labels[self.disease_names.index(finding)] = 1
 
-        # Apply transforms
-        if self.transform:
-            transformed = self.transform(image=image)
-            image = transformed['image']
+            # Apply transforms
+            if self.transform:
+                transformed = self.transform(image=image)
+                image = transformed['image']
 
-        # Get bounding boxes if available
-        bboxes = self._get_bounding_boxes(image_id)
+            # Get bounding boxes if available
+            bboxes = self._get_bounding_boxes(image_id)
 
-        return image, labels, bboxes
+            return image, labels, bboxes
+
+        except Exception as e:
+            self.logger.error(f"Error processing sample {idx}: {str(e)}")
+            raise
 
 
 def get_data_loaders(config):
@@ -156,4 +207,5 @@ def get_data_loaders(config):
     )
 
     return train_loader, val_loader, test_loader
+
 

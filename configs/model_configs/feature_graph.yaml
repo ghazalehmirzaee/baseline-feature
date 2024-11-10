@@ -17,6 +17,14 @@ dataset:
   ]
 
 
+  train_csv: "/users/gm00051/ChestX-ray14/labels/train_set.csv"
+  val_csv: "/users/gm00051/ChestX-ray14/labels/val_set.csv"
+  test_csv: "/users/gm00051/ChestX-ray14/labels/test_set.csv"
+  image_dir: "/users/gm00051/ChestX-ray14/images"
+  bb_annotations: "/users/gm00051/ChestX-ray14/labels/BBox_List_2017.csv"
+
+
+
 model:
   name: "feature_graph"
   baseline_checkpoint: "/users/gm00051/projects/cvpr/baseline/Graph-Augmented-Vision-Transformers/scripts/checkpoints/checkpoint_epoch_82_auc_0.7225.pt"
@@ -43,6 +51,7 @@ training:
   log_interval: 100
   use_amp: true
   gradient_clip_val: 1.0
+
 
 
 wandb:
