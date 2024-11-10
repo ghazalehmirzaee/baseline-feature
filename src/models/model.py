@@ -74,14 +74,9 @@ class GraphAugmentedViT(nn.Module):
         self.register_buffer('co_occurrence_matrix', torch.zeros(num_diseases, num_diseases))
         self.register_buffer('co_occurrence_count', torch.zeros(num_diseases, num_diseases))
 
-    def extract_regions(self, images, batch_data):
-        """
-        Extract and process regions based on bounding box data
 
-        Args:
-            images: Batch of images (B, C, H, W)
-            batch_data: Dictionary containing batch information including bbox data
-        """
+    def extract_regions(self, images, batch_data):
+        """Extract and process regions based on bounding box data"""
         batch_size = images.size(0)
         device = images.device
 
@@ -89,54 +84,69 @@ class GraphAugmentedViT(nn.Module):
         region_features = torch.zeros(batch_size, self.num_diseases, self.feature_dim, device=device)
         area_matrix = torch.zeros(batch_size, self.num_diseases, device=device)
 
+        # Handle batch processing
         for b in range(batch_size):
-            bbox_info = batch_data[b]['bbox']  # Get bbox info for this sample
+            try:
+                # Get bbox data for this image
+                bbox_info = batch_data['bbox'][b]  # This should be a dictionary
+                if not bbox_info:  # Skip if no bbox data
+                    continue
 
-            for disease_idx, disease in enumerate(self.diseases):
-                if disease in bbox_info:
-                    boxes = bbox_info[disease]
-                    if not boxes:
-                        continue
+                # Process each disease
+                for disease_idx, disease_name in enumerate(self.diseases):
+                    if disease_name in bbox_info:
+                        boxes = bbox_info[disease_name]
+                        if not boxes:
+                            continue
 
-                    # Process each bounding box
-                    box_features = []
-                    total_area = 0
+                        # Process boxes for this disease
+                        box_features = []
+                        total_area = 0
 
-                    for box in boxes:
-                        x1, y1, w, h = box
-                        x2, y2 = x1 + w, y1 + h
+                        for box in boxes:
+                            try:
+                                x1, y1, w, h = [float(coord) for coord in box]
+                                x2, y2 = x1 + w, y1 + h
 
-                        # Add padding
-                        padding = min(0.1, 50 / (w * h) ** 0.5)
-                        pad_w = int(w * padding)
-                        pad_h = int(h * padding)
+                                # Add padding
+                                padding = min(0.1, 50 / max(1, (w * h) ** 0.5))
+                                pad_w = int(w * padding)
+                                pad_h = int(h * padding)
 
-                        x1 = max(0, x1 - pad_w)
-                        y1 = max(0, y1 - pad_h)
-                        x2 = min(images.size(3), x2 + pad_w)
-                        y2 = min(images.size(2), y2 + pad_h)
+                                # Ensure coordinates are within image bounds
+                                x1 = max(0, int(x1 - pad_w))
+                                y1 = max(0, int(y1 - pad_h))
+                                x2 = min(images.size(3), int(x2 + pad_w))
+                                y2 = min(images.size(2), int(y2 + pad_h))
 
-                        # Extract and resize region
-                        region = images[b:b + 1, :, y1:y2, x1:x2]
-                        if region.numel() > 0:  # Check if region is not empty
-                            region = nn.functional.interpolate(
-                                region,
-                                size=(224, 224),
-                                mode='bilinear',
-                                align_corners=False
-                            )
+                                if x2 > x1 and y2 > y1:  # Valid region
+                                    region = images[b:b + 1, :, y1:y2, x1:x2]
+                                    region = nn.functional.interpolate(
+                                        region,
+                                        size=(224, 224),
+                                        mode='bilinear',
+                                        align_corners=False
+                                    )
 
-                            # Get features
-                            with torch.no_grad():
-                                features = self.vit.forward_features(region)
-                            box_features.append(features.mean(1))
-                            total_area += (y2 - y1) * (x2 - x1)
+                                    with torch.no_grad():
+                                        features = self.vit.forward_features(region)
+                                    box_features.append(features.mean(1))
+                                    total_area += (y2 - y1) * (x2 - x1)
 
-                    if box_features:
-                        region_features[b, disease_idx] = torch.stack(box_features).mean(0)
-                        area_matrix[b, disease_idx] = total_area
+                            except Exception as e:
+                                print(f"Error processing box: {e}")
+                                continue
+
+                        if box_features:
+                            region_features[b, disease_idx] = torch.stack(box_features).mean(0)
+                            area_matrix[b, disease_idx] = total_area
+
+            except Exception as e:
+                print(f"Error processing batch item {b}: {e}")
+                continue
 
         return region_features, area_matrix
+
 
     def forward(self, images, batch_data=None):
         """
@@ -189,7 +199,7 @@ class GraphAugmentedViT(nn.Module):
             self.update_co_occurrence(batch_data['labels'])
 
         return torch.sigmoid(logits)
-    
+
 
 
     def get_attention_weights(self, images, bbox_data=None):

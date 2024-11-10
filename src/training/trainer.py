@@ -9,17 +9,8 @@ import numpy as np
 from tqdm import tqdm
 from ..utils.metrics import calculate_metrics
 
-
 class Trainer:
-    def __init__(
-            self,
-            model,
-            criterion,
-            train_loader,
-            val_loader,
-            config,
-            device='cuda'
-    ):
+    def __init__(self, model, criterion, train_loader, val_loader, config, device='cuda'):
         self.model = model.to(device)
         self.criterion = criterion
         self.train_loader = train_loader
@@ -30,7 +21,7 @@ class Trainer:
         # Optimizer
         self.optimizer = optim.AdamW(
             model.parameters(),
-            lr=config['learning_rate'],  # Access as dictionary
+            lr=config['learning_rate'],
             weight_decay=config['weight_decay']
         )
 
@@ -45,18 +36,10 @@ class Trainer:
 
         # Early stopping
         self.best_val_auc = 0
-        self.patience = config['patience']  # Access as dictionary
+        self.patience = config['patience']
         self.patience_counter = 0
 
-        # Initialize wandb
-        wandb.init(
-            project="chest-xray-classification",
-            config=config,
-            name=config.get('run_name', 'graph-augmented-vit')
-        )
-
     def train_epoch(self):
-        """Train for one epoch"""
         self.model.train()
         total_loss = 0
         predictions = []
@@ -64,14 +47,22 @@ class Trainer:
 
         pbar = tqdm(self.train_loader, desc='Training')
         for batch in pbar:
-            # Get batch data
+            # Move everything to device
             images = batch['image'].to(self.device)
             labels = batch['labels'].to(self.device)
-            bbox_data = batch['bbox']
+
+            # Prepare batch data dictionary
+            batch_data = {
+                'images': images,
+                'labels': labels,
+                'bbox': batch['bbox'],
+                'image_path': batch['image_path'],
+                'image_name': batch['image_name']
+            }
 
             # Forward pass
             self.optimizer.zero_grad()
-            outputs = self.model(images, bbox_data)
+            outputs = self.model(images, batch_data)
 
             # Compute loss
             loss, loss_components = self.criterion(outputs, labels)
@@ -96,7 +87,6 @@ class Trainer:
 
     @torch.no_grad()
     def validate(self):
-        """Validate model"""
         self.model.eval()
         total_loss = 0
         predictions = []
@@ -105,9 +95,16 @@ class Trainer:
         for batch in tqdm(self.val_loader, desc='Validation'):
             images = batch['image'].to(self.device)
             labels = batch['labels'].to(self.device)
-            bbox_data = batch['bbox']
 
-            outputs = self.model(images, bbox_data)
+            batch_data = {
+                'images': images,
+                'labels': labels,
+                'bbox': batch['bbox'],
+                'image_path': batch['image_path'],
+                'image_name': batch['image_name']
+            }
+
+            outputs = self.model(images, batch_data)
             loss, _ = self.criterion(outputs, labels)
 
             total_loss += loss.item()
@@ -120,32 +117,7 @@ class Trainer:
 
         return total_loss / len(self.val_loader), metrics
 
-    def save_checkpoint(self, epoch, metrics, is_best=False):
-        """Save model checkpoint"""
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict(),
-            'metrics': metrics,
-            'config': self.config
-        }
-
-        # Save latest checkpoint
-        torch.save(
-            checkpoint,
-            f'{self.config.checkpoint_dir}/checkpoint_epoch_{epoch}.pt'
-        )
-
-        # Save best model
-        if is_best:
-            torch.save(
-                checkpoint,
-                f'{self.config.checkpoint_dir}/best_model.pt'
-            )
-
     def train(self, num_epochs):
-        """Complete training procedure"""
         for epoch in range(num_epochs):
             print(f'\nEpoch {epoch + 1}/{num_epochs}')
 
@@ -165,7 +137,6 @@ class Trainer:
                 self.save_checkpoint(epoch, val_metrics, is_best=True)
             else:
                 self.patience_counter += 1
-                self.save_checkpoint(epoch, val_metrics)
 
             # Log metrics
             wandb.log({
@@ -173,10 +144,9 @@ class Trainer:
                 'val_loss': val_loss,
                 **{f'train_{k}': v for k, v in train_metrics.items()},
                 **{f'val_{k}': v for k, v in val_metrics.items()},
-                'learning_rate': self.optimizer.param_groups[0]['lr']
+                'lr': self.optimizer.param_groups[0]['lr']
             })
 
-            # Check early stopping
             if self.patience_counter >= self.patience:
                 print('Early stopping triggered')
                 break
