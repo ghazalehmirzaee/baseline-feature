@@ -6,6 +6,8 @@ import numpy as np
 from pathlib import Path
 import cv2
 import logging
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 from torchvision import transforms
 
 
@@ -45,12 +47,29 @@ class ChestXrayDataset(Dataset):
             'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
         ]
 
-        # Resize transform
-        self.resize = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-        ])
+    def _get_default_transforms(self, phase):
+        """Get default transforms for the dataset."""
+        if phase == 'train':
+            return A.Compose([
+                A.Resize(224, 224),
+                A.HorizontalFlip(p=0.5),
+                A.RandomBrightnessContrast(p=0.2),
+                A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=10, p=0.2),
+                A.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225]
+                ),
+                ToTensorV2(),
+            ])
+        else:  # val or test
+            return A.Compose([
+                A.Resize(224, 224),
+                A.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225]
+                ),
+                ToTensorV2(),
+            ])
 
     def _get_bounding_boxes(self, image_id):
         """Get bounding box annotations for an image."""
@@ -74,18 +93,28 @@ class ChestXrayDataset(Dataset):
                         x, y, w, h = map(float, coords)
                     else:
                         # If coordinates are in separate columns
-                        x = float(row['x']) if 'x' in row else float(row['Bbox_x'])
-                        y = float(row['y']) if 'y' in row else float(row['Bbox_y'])
-                        w = float(row['w']) if 'w' in row else float(row['Bbox_w'])
-                        h = float(row['h']) if 'h' in row else float(row['Bbox_h'])
+                        x = float(row.get('x', row.get('Bbox_x', 0)))
+                        y = float(row.get('y', row.get('Bbox_y', 0)))
+                        w = float(row.get('w', row.get('Bbox_w', 0)))
+                        h = float(row.get('h', row.get('Bbox_h', 0)))
 
                     # Get disease label
                     disease = row['Finding Label']
                     if disease in self.disease_names:
                         disease_idx = self.disease_names.index(disease)
-                        bboxes.append([x, y, w, h])
+
+                        # Scale bounding box coordinates to match resized image
+                        scale_x = 224.0 / image_bbs['width'].iloc[0] if 'width' in image_bbs else 1
+                        scale_y = 224.0 / image_bbs['height'].iloc[0] if 'height' in image_bbs else 1
+
+                        x_scaled = x * scale_x
+                        y_scaled = y * scale_y
+                        w_scaled = w * scale_x
+                        h_scaled = h * scale_y
+
+                        bboxes.append([x_scaled, y_scaled, w_scaled, h_scaled])
                         labels.append(disease_idx)
-                        areas.append(w * h)
+                        areas.append(w_scaled * h_scaled)
 
                 except Exception as e:
                     self.logger.warning(f"Error processing bounding box row for {image_id}: {str(e)}")
@@ -119,7 +148,7 @@ class ChestXrayDataset(Dataset):
                 self.logger.error(f"Image not found: {image_path}")
                 raise FileNotFoundError(f"Image not found: {image_path}")
 
-            # Load and resize image
+            # Load image
             image = cv2.imread(str(image_path))
             if image is None:
                 self.logger.error(f"Failed to load image: {image_path}")
@@ -127,15 +156,14 @@ class ChestXrayDataset(Dataset):
 
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-            # Resize image to 224x224
-            if image.shape[:2] != (224, 224):
-                image = cv2.resize(image, (224, 224))
-
             # Get labels
             labels = torch.tensor(
                 [row[f'label_{i}'] for i in range(14)],
                 dtype=torch.float32
             )
+
+            # Get original image dimensions for bbox scaling
+            orig_h, orig_w = image.shape[:2]
 
             # Apply transforms
             if self.transform:
@@ -144,6 +172,12 @@ class ChestXrayDataset(Dataset):
 
             # Get bounding boxes if available
             bboxes = self._get_bounding_boxes(image_id)
+            if bboxes is not None:
+                # Scale bounding boxes to match transformed image size
+                scale_x = 224.0 / orig_w
+                scale_y = 224.0 / orig_h
+                bboxes['boxes'][:, [0, 2]] *= scale_x
+                bboxes['boxes'][:, [1, 3]] *= scale_y
 
             return image, labels, bboxes
 
