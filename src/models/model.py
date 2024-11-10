@@ -48,12 +48,11 @@ class GraphAugmentedViT(nn.Module):
         # Load pre-trained model
         self.load_pretrained_model(pretrained_path)
 
-
-        # Graph-based refinement components
+        # Graph layers need to match dimensions
         self.graph_layers = nn.ModuleList([
             GraphLayer(
-                feature_dim=feature_dim,  # Changed from in_dim to feature_dim
-                hidden_dim=hidden_dim,
+                feature_dim=512,  # Changed from 768 to match region_projection output
+                hidden_dim=512,
                 num_diseases=num_diseases,
                 dropout=dropout
             ) for _ in range(graph_layers)
@@ -242,15 +241,25 @@ class GraphAugmentedViT(nn.Module):
         batch_size = images.size(0)
 
         # Extract global features
-        global_features = self.extract_global_features(images)  # [B, feature_dim]
+        global_features = self.extract_global_features(images)  # [B, 768]
         print(f"Global features shape: {global_features.shape}")
 
-        global_features = self.global_projection(global_features)  # [B, hidden_dim]
+        global_features = self.global_projection(global_features)  # [B, 512]
 
-        # Extract region features
-        region_features, area_matrix = self.extract_region_features(images, batch_data['bbox'])
-        # Project region features
-        region_features = self.region_projection(region_features)  # [B, num_diseases, hidden_dim]
+        # Extract and project region features
+        if batch_data is not None:
+            region_features, area_matrix = self.extract_region_features(
+                images, batch_data['bbox']
+            )  # [B, num_diseases, 768]
+            # Project from 768 to 512
+            region_features = self.region_projection(region_features)  # [B, num_diseases, 512]
+        else:
+            region_features = torch.zeros(
+                batch_size, self.num_diseases, self.hidden_dim
+            ).to(device)
+            area_matrix = torch.zeros(
+                batch_size, self.num_diseases
+            ).to(device)
 
         print(f"Region features shape: {region_features.shape}")
         print(f"Area matrix shape: {area_matrix.shape}")
@@ -263,7 +272,6 @@ class GraphAugmentedViT(nn.Module):
                 area_matrix,
                 self.co_occurrence_matrix.to(device)
             )
-            
 
         # Disease-specific attention
         query = global_features.unsqueeze(1)  # [B, 1, hidden_dim]
