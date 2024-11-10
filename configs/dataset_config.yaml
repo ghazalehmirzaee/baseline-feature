@@ -1,0 +1,43 @@
+# Dataset paths
+data_root: "/path/to/dataset"
+train_split: "train"
+val_split: "val"
+test_split: "test"
+
+# Image size
+image_size: 224
+
+# Class names
+diseases:
+  - "Atelectasis"
+  - "Cardiomegaly"
+  - "Effusion"
+  - "Infiltration"
+  - "Mass"
+  - "Nodule"
+  - "Pneumonia"
+  - "Pneumothorax"
+  - "Consolidation"
+  - "Edema"
+  - "Emphysema"
+  - "Fibrosis"
+  - "Pleural_Thickening"
+  - "Hernia"
+
+# Class weights for handling imbalance
+class_weights:
+  Atelectasis: 1.0
+  Cardiomegaly: 2.5
+  Effusion: 1.2
+  Infiltration: 0.8
+  Mass: 2.0
+  Nodule: 2.2
+  Pneumonia: 2.8
+  Pneumothorax: 2.3
+  Consolidation: 2.4
+  Edema: 2.6
+  Emphysema: 3.0
+  Fibrosis: 3.2
+  Pleural_Thickening: 2.7
+  Hernia: 4.0
+
