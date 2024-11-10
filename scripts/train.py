@@ -72,7 +72,8 @@ def load_bbox_data(bbox_file: str):
 #     weights = np.min(ratios) / ratios
 #
 #     return torch.FloatTensor(weights)
-# 
+#
+
 
 def compute_class_weights(label_file):
     """Compute class weights based on disease distribution and median frequency balancing."""
@@ -86,25 +87,35 @@ def compute_class_weights(label_file):
     disease_counts = {disease: 0 for disease in disease_names}
     total_images = 0
 
-    # Read and process the label file
-    with open(label_file, 'r') as f:
-        lines = f.readlines()
+    # Check if label_file is a file path or an array
+    if isinstance(label_file, str) and os.path.exists(label_file):
+        # Read and process the label file
+        with open(label_file, 'r') as f:
+            lines = f.readlines()
+        total_images = len(lines)
 
-    total_images = len(lines)
+        # Count disease occurrences
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) < 15:  # Image name + 14 labels
+                continue
 
-    # Count disease occurrences
-    for line in lines:
-        parts = line.strip().split()
-        if len(parts) < 15:  # Image name + 14 labels
-            continue
+            # Parse binary labels (skip image name)
+            labels = [int(x) for x in parts[1:15]]
 
-        # Parse binary labels (skip image name)
-        labels = [int(x) for x in parts[1:15]]
-
-        # Count positive cases
-        for i, label in enumerate(labels):
-            if label == 1:
-                disease_counts[disease_names[i]] += 1
+            # Count positive cases
+            for i, label in enumerate(labels):
+                if label == 1:
+                    disease_counts[disease_names[i]] += 1
+    elif isinstance(label_file, np.ndarray):
+        # If it's an array, assume it directly contains the labels
+        total_images = label_file.shape[0]
+        for labels in label_file:
+            for i, label in enumerate(labels[:14]):  # Assumes binary labels are in columns 1 to 14
+                if label == 1:
+                    disease_counts[disease_names[i]] += 1
+    else:
+        raise TypeError("Expected label_file to be a file path or ndarray with label data.")
 
     # Calculate weights using median frequency balancing
     frequencies = np.array([max(1, disease_counts[disease]) for disease in disease_names])
@@ -116,7 +127,6 @@ def compute_class_weights(label_file):
 
     # Return weights as a PyTorch tensor
     return torch.FloatTensor(weights)
-
 
 
 def main():
