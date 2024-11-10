@@ -6,13 +6,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 from typing import Dict, List, Tuple, Optional
+import timm
+from src.models.graph import GraphLayer
 
 
 class GraphAugmentedViT(nn.Module):
     """
-    Multi-stage model combining pre-trained ViT with graph-based refinement
+        Multi-stage model combining pre-trained ViT with graph-based refinement
     """
-
     def __init__(
             self,
             pretrained_path: str,
@@ -37,6 +38,7 @@ class GraphAugmentedViT(nn.Module):
 
         # Load pre-trained model
         self.load_pretrained_model(pretrained_path)
+
 
         # Graph-based refinement components
         self.graph_layers = nn.ModuleList([
@@ -87,33 +89,47 @@ class GraphAugmentedViT(nn.Module):
         self.register_buffer('co_occurrence_count', torch.zeros(num_diseases, num_diseases))
 
     def load_pretrained_model(self, checkpoint_path: str):
-        """Load pre-trained ViT model"""
+        """Load pre-trained ViT model with correct architecture"""
         print(f"Loading pre-trained model from {checkpoint_path}")
 
         # Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
         state_dict = checkpoint['model_state_dict'] if 'model_state_dict' in checkpoint else checkpoint
 
-        # Initialize base ViT model
-        self.base_model = models.vit_b_16()
-        # Modify head to match your pre-trained model
-        self.base_model.heads = nn.Linear(self.feature_dim, self.num_diseases)
+        # Initialize ViT with timm architecture to match your pretrained model
+        self.base_model = timm.create_model(
+            'vit_base_patch16_224',
+            pretrained=True,
+            num_classes=self.num_diseases
+        )
+
+        # Print model keys for debugging
+        print("Keys in checkpoint:", state_dict.keys())
+        print("Keys in model:", self.base_model.state_dict().keys())
 
         # Load weights
         try:
-            self.base_model.load_state_dict(state_dict)
+            # Create a new state dict with matching keys
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                # Remove any "module." prefix (from DataParallel)
+                if k.startswith('module.'):
+                    k = k[7:]
+                # Add to new state dict
+                new_state_dict[k] = v
+
+            # Load the weights
+            msg = self.base_model.load_state_dict(new_state_dict, strict=False)
+            print(f"Load results: {msg}")
             print("Successfully loaded pre-trained weights")
         except Exception as e:
             print(f"Error loading weights: {str(e)}")
             raise
 
         # Remove classification head
-        self.base_model.heads = nn.Identity()
+        self.base_model.head = nn.Identity()
 
-        # Freeze base model if needed
-        for param in self.base_model.parameters():
-            param.requires_grad = False
-
+        
     def extract_global_features(self, images: torch.Tensor) -> torch.Tensor:
         """Extract global image features"""
         with torch.no_grad():
