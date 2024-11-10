@@ -101,8 +101,12 @@ class FeatureGraphModel(nn.Module):
             if len(boxes) == 0 or not isinstance(boxes, torch.Tensor):
                 with torch.no_grad():
                     features = self.backbone(images[i].unsqueeze(0))  # [1, 768]
+                    # Ensure features have correct shape before projection
+                    if len(features.shape) == 1:
+                        features = features.unsqueeze(0)
                     features = self.region_feature_proj(features)  # [1, 256]
-                all_region_features.append(features)
+                    self.logger.info(f"Global features shape: {features.shape}")
+                    all_region_features.append(features)
                 continue
 
             region_features = []
@@ -139,7 +143,11 @@ class FeatureGraphModel(nn.Module):
 
                     with torch.no_grad():
                         features = self.backbone(region)  # [1, 768]
+                        # Ensure features have correct shape before projection
+                        if len(features.shape) == 1:
+                            features = features.unsqueeze(0)
                         features = self.region_feature_proj(features)  # [1, 256]
+                        self.logger.info(f"Region features shape: {features.shape}")
                     region_features.append(features)
                     valid_boxes += 1
 
@@ -149,13 +157,17 @@ class FeatureGraphModel(nn.Module):
 
             if valid_boxes > 0:
                 region_features = torch.cat(region_features, dim=0)  # [N, 256]
+                self.logger.info(f"Combined region features shape: {region_features.shape}")
                 all_region_features.append(region_features)
             else:
                 # Fallback to global features
                 with torch.no_grad():
                     features = self.backbone(images[i].unsqueeze(0))  # [1, 768]
+                    if len(features.shape) == 1:
+                        features = features.unsqueeze(0)
                     features = self.region_feature_proj(features)  # [1, 256]
-                all_region_features.append(features)
+                    self.logger.info(f"Fallback features shape: {features.shape}")
+                    all_region_features.append(features)
 
         return all_region_features
 
@@ -164,9 +176,12 @@ class FeatureGraphModel(nn.Module):
         batch_features = []
 
         for features in region_features:
+            # Debug log
+            self.logger.info(f"Input features shape: {features.shape}")
+
             # Ensure features are of correct shape
             if len(features.shape) != 2 or features.shape[1] != self.graph_hidden_dim:
-                self.logger.warning(f"Invalid feature shape: {features.shape}")
+                self.logger.warning(f"Invalid feature shape: {features.shape}, expected [N, {self.graph_hidden_dim}]")
                 continue
 
             num_nodes = features.size(0)
@@ -174,15 +189,22 @@ class FeatureGraphModel(nn.Module):
                 continue
 
             # Reshape features for attention
-            features_t = features.transpose(0, 1).unsqueeze(1)  # [256, 1, N]
+            features_t = features.transpose(0, 1)  # [256, N]
+            features_t = features_t.unsqueeze(1)  # [256, 1, N]
 
             # Apply attention
             attn_output, attn_weights = self.graph_attention(
-                features_t, features_t, features_t
+                query=features_t,
+                key=features_t,
+                value=features_t
             )
 
             # Convert attention weights to adjacency matrix
             adj_matrix = attn_weights.squeeze(0)  # [N, N]
+
+            # Debug log
+            self.logger.info(f"Attention output shape: {attn_output.shape}")
+            self.logger.info(f"Adjacency matrix shape: {adj_matrix.shape}")
 
             batch_graphs.append(adj_matrix)
             batch_features.append(features)
@@ -192,6 +214,13 @@ class FeatureGraphModel(nn.Module):
     def forward(self, images: torch.Tensor, bboxes: Optional[Dict[str, list]] = None) -> torch.Tensor:
         # Get baseline features
         batch_features = self.backbone(images)  # [B, 768]
+
+        # Ensure batch_features has correct shape
+        if len(batch_features.shape) == 1:
+            batch_features = batch_features.unsqueeze(0)
+
+        # Project backbone features to graph hidden dimension
+        batch_features = self.region_feature_proj(batch_features)  # [B, 256]
 
         if self.training and bboxes is not None and isinstance(bboxes, dict):
             try:
@@ -213,10 +242,16 @@ class FeatureGraphModel(nn.Module):
 
                         # Aggregate node embeddings (mean pooling)
                         graph_embedding = x.mean(dim=0)  # [256]
+
+                        # Ensure graph_embedding has correct shape
+                        if len(graph_embedding.shape) == 0:
+                            graph_embedding = graph_embedding.unsqueeze(0)
+
                         graph_embeddings.append(graph_embedding)
 
                     if graph_embeddings:
                         graph_embeddings = torch.stack(graph_embeddings)  # [B, 256]
+                        self.logger.info(f"Graph embeddings shape: {graph_embeddings.shape}")
                     else:
                         graph_embeddings = torch.zeros(
                             batch_features.shape[0],
@@ -244,28 +279,9 @@ class FeatureGraphModel(nn.Module):
                 device=images.device
             )
 
-        # Project backbone features if needed
-        if batch_features.shape[1] != self.feature_dim:
-            batch_features = self.region_feature_proj(batch_features)
-
         # Concatenate and fuse features
         combined_features = torch.cat([batch_features, graph_embeddings], dim=1)  # [B, 768+256]
         logits = self.fusion_mlp(combined_features)  # [B, num_classes]
 
         return logits
-
-    def get_attention_weights(self) -> Dict[str, torch.Tensor]:
-        if hasattr(self, 'graph_attention'):
-            return {
-                'graph_attention': self.graph_attention.get_attention_weights()
-            }
-        return {}
-
-    def freeze_backbone(self):
-        for param in self.backbone.parameters():
-            param.requires_grad = False
-
-    def unfreeze_backbone(self):
-        for param in self.backbone.parameters():
-            param.requires_grad = True
 
