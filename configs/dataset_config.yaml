@@ -1,5 +1,5 @@
 # Dataset paths
-data_root: "/path/to/dataset"
+data_root: "/users/gm00051/ChestX-ray14/categorized_images"
 train_split: "train"
 val_split: "val"
 test_split: "test"
