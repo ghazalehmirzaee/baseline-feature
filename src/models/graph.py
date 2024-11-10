@@ -11,11 +11,11 @@ class ProgressiveGraphConstruction(nn.Module):
         super().__init__()
         self.num_diseases = num_diseases
         self.feature_dim = feature_dim
-        self.gamma = 0.8  # Confidence reduction factor
 
-        # Learnable parameters for graph construction
+        # Learnable parameters
         self.feature_projection = nn.Linear(feature_dim, feature_dim)
         self.attention = nn.MultiheadAttention(feature_dim, 8, dropout=0.1)
+
 
     def compute_area_weights(self, areas_i, areas_j):
         """Compute area-based weights for feature relationships"""
@@ -117,33 +117,43 @@ class ProgressiveGraphConstruction(nn.Module):
 
         return estimated_weights
 
-    def forward(self, features, areas, co_occurrence_mask):
-        """
-        Construct disease relationship graph using progressive framework
+    def forward(self, region_features, area_matrix, co_occurrence_count):
+        device = region_features.device
+        # Ensure inputs are on the same device
+        region_features = region_features.to(device)
+        area_matrix = area_matrix.to(device)
+        co_occurrence_count = co_occurrence_count.to(device)
 
-        Args:
-            features: Tensor of shape (batch_size, num_diseases, feature_dim)
-            areas: Tensor of shape (batch_size, num_diseases) containing BB areas
-            co_occurrence_mask: Matrix containing co-occurrence counts
-        """
-        # Compute direct relationships
-        direct_weights = self.direct_relationships(features, areas, co_occurrence_mask)
+        # Project features
+        region_features = self.feature_projection(region_features.float())
 
-        # Compute limited sample relationships
-        limited_weights = self.limited_relationships(
-            features, areas, co_occurrence_mask, direct_weights
-        )
+        # Compute similarity matrix
+        batch_size = region_features.size(0)
+        adjacency_matrix = torch.zeros(batch_size, self.num_diseases, self.num_diseases, device=device)
 
-        # Estimate missing relationships
-        estimated_weights = self.estimate_missing_relationships(
-            direct_weights, limited_weights, co_occurrence_mask
-        )
+        for b in range(batch_size):
+            # Compute pairwise similarities
+            features = region_features[b]  # [num_diseases, feature_dim]
+            areas = area_matrix[b]  # [num_diseases]
 
-        # Combine all relationships
-        adjacency_matrix = direct_weights + limited_weights + estimated_weights
+            # Normalize features
+            norm_features = F.normalize(features, p=2, dim=1)
 
-        # Normalize
-        adjacency_matrix = F.normalize(adjacency_matrix, p=1, dim=1)
+            # Compute similarity
+            sim_matrix = torch.matmul(norm_features, norm_features.t())
+
+            # Apply area weights
+            area_weights = torch.outer(areas, areas)
+            area_weights = area_weights / (area_weights.max() + 1e-8)
+
+            # Combine with co-occurrence information
+            co_occurrence_weights = co_occurrence_count / (co_occurrence_count.sum() + 1e-8)
+
+            # Final adjacency matrix
+            adjacency_matrix[b] = sim_matrix * area_weights * co_occurrence_weights
+
+        # Normalize adjacency matrix
+        adjacency_matrix = F.softmax(adjacency_matrix, dim=-1)
 
         return adjacency_matrix
 
