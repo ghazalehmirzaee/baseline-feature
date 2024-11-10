@@ -74,9 +74,13 @@ class GraphAugmentedViT(nn.Module):
         self.register_buffer('co_occurrence_matrix', torch.zeros(num_diseases, num_diseases))
         self.register_buffer('co_occurrence_count', torch.zeros(num_diseases, num_diseases))
 
-    def extract_regions(self, images, bbox_data):
+    def extract_regions(self, images, batch_data):
         """
         Extract and process regions based on bounding box data
+
+        Args:
+            images: Batch of images (B, C, H, W)
+            batch_data: Dictionary containing batch information including bbox data
         """
         batch_size = images.size(0)
         device = images.device
@@ -86,51 +90,61 @@ class GraphAugmentedViT(nn.Module):
         area_matrix = torch.zeros(batch_size, self.num_diseases, device=device)
 
         for b in range(batch_size):
-            img_name = os.path.basename(bbox_data[b]['path'])
-            boxes = bbox_data[b].get('bbox', {})
+            bbox_info = batch_data[b]['bbox']  # Get bbox info for this sample
 
-            for disease_idx, disease_boxes in enumerate(boxes.items()):
-                disease, boxes = disease_boxes
-                if not boxes:
-                    continue
+            for disease_idx, disease in enumerate(self.diseases):
+                if disease in bbox_info:
+                    boxes = bbox_info[disease]
+                    if not boxes:
+                        continue
 
-                # Process each bounding box
-                box_features = []
-                total_area = 0
+                    # Process each bounding box
+                    box_features = []
+                    total_area = 0
 
-                for box in boxes:
-                    x1, y1, w, h = box
-                    x2, y2 = x1 + w, y1 + h
+                    for box in boxes:
+                        x1, y1, w, h = box
+                        x2, y2 = x1 + w, y1 + h
 
-                    # Add padding
-                    padding = min(0.1, 50 / (w * h) ** 0.5)
-                    pad_w = int(w * padding)
-                    pad_h = int(h * padding)
+                        # Add padding
+                        padding = min(0.1, 50 / (w * h) ** 0.5)
+                        pad_w = int(w * padding)
+                        pad_h = int(h * padding)
 
-                    x1 = max(0, x1 - pad_w)
-                    y1 = max(0, y1 - pad_h)
-                    x2 = min(images.size(3), x2 + pad_w)
-                    y2 = min(images.size(2), y2 + pad_h)
+                        x1 = max(0, x1 - pad_w)
+                        y1 = max(0, y1 - pad_h)
+                        x2 = min(images.size(3), x2 + pad_w)
+                        y2 = min(images.size(2), y2 + pad_h)
 
-                    # Extract and resize region
-                    region = images[b:b + 1, :, y1:y2, x1:x2]
-                    region = nn.functional.interpolate(region, size=(224, 224), mode='bilinear')
+                        # Extract and resize region
+                        region = images[b:b + 1, :, y1:y2, x1:x2]
+                        if region.numel() > 0:  # Check if region is not empty
+                            region = nn.functional.interpolate(
+                                region,
+                                size=(224, 224),
+                                mode='bilinear',
+                                align_corners=False
+                            )
 
-                    # Get features
-                    with torch.no_grad():
-                        features = self.vit.forward_features(region)
-                    box_features.append(features.mean(1))
-                    total_area += (y2 - y1) * (x2 - x1)
+                            # Get features
+                            with torch.no_grad():
+                                features = self.vit.forward_features(region)
+                            box_features.append(features.mean(1))
+                            total_area += (y2 - y1) * (x2 - x1)
 
-                if box_features:
-                    region_features[b, disease_idx] = torch.stack(box_features).mean(0)
-                    area_matrix[b, disease_idx] = total_area
+                    if box_features:
+                        region_features[b, disease_idx] = torch.stack(box_features).mean(0)
+                        area_matrix[b, disease_idx] = total_area
 
         return region_features, area_matrix
 
-    def forward(self, images, bbox_data=None, labels=None):
+    def forward(self, images, batch_data=None):
         """
         Forward pass
+
+        Args:
+            images: Input images (B, C, H, W)
+            batch_data: Batch information including bbox data
         """
         batch_size = images.size(0)
         device = images.device
@@ -140,8 +154,8 @@ class GraphAugmentedViT(nn.Module):
         pooled_features = self.feature_pooling(vit_features)
 
         # Extract region features if bbox_data is provided
-        if bbox_data is not None:
-            region_features, area_matrix = self.extract_regions(images, bbox_data)
+        if batch_data is not None:
+            region_features, area_matrix = self.extract_regions(images, batch_data)
         else:
             region_features = torch.zeros(batch_size, self.num_diseases, self.feature_dim, device=device)
             area_matrix = torch.zeros(batch_size, self.num_diseases, device=device)
@@ -170,11 +184,12 @@ class GraphAugmentedViT(nn.Module):
         # Final classification
         logits = self.final_classifier(fused_features)
 
-        # Update co-occurrence if labels provided
-        if self.training and labels is not None:
-            self.update_co_occurrence(labels)
+        # If in training mode and labels are provided
+        if self.training and 'labels' in batch_data:
+            self.update_co_occurrence(batch_data['labels'])
 
         return torch.sigmoid(logits)
+    
 
 
     def get_attention_weights(self, images, bbox_data=None):

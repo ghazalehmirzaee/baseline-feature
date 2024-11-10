@@ -1,18 +1,16 @@
 # src/data/dataset.py
 
+import os
 import torch
 from torch.utils.data import Dataset
-import numpy as np
 from PIL import Image
-import os
 
-# src/data/dataset.py
 
 class ChestXrayDataset(Dataset):
     def __init__(self, image_paths, labels, bbox_data=None, transform=None):
         self.image_paths = image_paths
         self.labels = torch.FloatTensor(labels)
-        self.bbox_data = bbox_data or {}  # Initialize as empty dict if None
+        self.bbox_data = bbox_data or {}
         self.transform = transform
 
         self.diseases = [
@@ -32,18 +30,17 @@ class ChestXrayDataset(Dataset):
 
         # Get bounding box if available
         img_name = os.path.basename(image_path)
-        bbox = self.bbox_data.get(img_name, {})  # Return empty dict if no bbox
+        bbox = self.bbox_data.get(img_name, {})
 
         # Apply transformations
         if self.transform:
             image = self.transform(image)
 
-        sample = {
+        return {
             'image': image,
             'labels': labels,
             'bbox': bbox,
-            'path': image_path
+            'image_path': image_path,
+            'image_name': img_name
         }
-
-        return sample
 
