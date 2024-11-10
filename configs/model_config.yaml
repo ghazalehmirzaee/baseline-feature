@@ -25,6 +25,7 @@ training:
   weight_decay: 0.01
   patience: 10  # Early stopping patience
   num_workers: 4
+  checkpoint_dir: "/users/gm00051/projects/cvpr/baseline-feature/results/checkpoints"
 
 # Loss weights
 loss_weights:

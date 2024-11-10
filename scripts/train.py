@@ -61,17 +61,62 @@ def load_bbox_data(bbox_file: str):
     return bbox_data
 
 
-def compute_class_weights(labels):
-    """Compute class weights based on label distribution"""
-    num_samples = len(labels)
-    pos_counts = np.sum(labels, axis=0)
-    neg_counts = num_samples - pos_counts
+# def compute_class_weights(labels):
+#     """Compute class weights based on label distribution"""
+#     num_samples = len(labels)
+#     pos_counts = np.sum(labels, axis=0)
+#     neg_counts = num_samples - pos_counts
+#
+#     # Compute weights using positive/negative ratio
+#     ratios = pos_counts / neg_counts
+#     weights = np.min(ratios) / ratios
+#
+#     return torch.FloatTensor(weights)
+# 
 
-    # Compute weights using positive/negative ratio
-    ratios = pos_counts / neg_counts
-    weights = np.min(ratios) / ratios
+def compute_class_weights(label_file):
+    """Compute class weights based on disease distribution and median frequency balancing."""
+    disease_names = [
+        'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration',
+        'Mass', 'Nodule', 'Pneumonia', 'Pneumothorax', 'Consolidation',
+        'Edema', 'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
+    ]
 
+    # Initialize counters for each disease
+    disease_counts = {disease: 0 for disease in disease_names}
+    total_images = 0
+
+    # Read and process the label file
+    with open(label_file, 'r') as f:
+        lines = f.readlines()
+
+    total_images = len(lines)
+
+    # Count disease occurrences
+    for line in lines:
+        parts = line.strip().split()
+        if len(parts) < 15:  # Image name + 14 labels
+            continue
+
+        # Parse binary labels (skip image name)
+        labels = [int(x) for x in parts[1:15]]
+
+        # Count positive cases
+        for i, label in enumerate(labels):
+            if label == 1:
+                disease_counts[disease_names[i]] += 1
+
+    # Calculate weights using median frequency balancing
+    frequencies = np.array([max(1, disease_counts[disease]) for disease in disease_names])
+    neg_frequencies = np.array([total_images - freq for freq in frequencies])
+
+    # Compute ratios and normalize weights so the minimum weight is 1.0
+    ratios = np.maximum(frequencies / neg_frequencies, neg_frequencies / frequencies)
+    weights = ratios / np.min(ratios)  # Normalize
+
+    # Return weights as a PyTorch tensor
     return torch.FloatTensor(weights)
+
 
 
 def main():
