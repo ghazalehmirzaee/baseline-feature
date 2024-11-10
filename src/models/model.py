@@ -20,6 +20,11 @@ class GraphAugmentedViT(nn.Module):
         """
         super().__init__()
 
+        # Store parameters as instance variables
+        self.num_diseases = num_diseases
+        self.feature_dim = feature_dim
+        self.hidden_dim = hidden_dim
+
         # Initialize Vision Transformer backbone
         self.vit = models.vit_b_16(pretrained=True)
 
@@ -34,12 +39,7 @@ class GraphAugmentedViT(nn.Module):
                 state_dict = state_dict['model_state_dict']
             self.vit.load_state_dict(state_dict, strict=False)
 
-        # Freeze ViT backbone (optional)
-        if pretrained_path:
-            for param in self.vit.parameters():
-                param.requires_grad = False
-
-        # Initialize graph modules
+        # Graph modules
         self.graph_constructor = ProgressiveGraphConstruction(
             num_diseases=num_diseases,
             feature_dim=feature_dim
@@ -77,10 +77,6 @@ class GraphAugmentedViT(nn.Module):
     def extract_regions(self, images, bbox_data):
         """
         Extract and process regions based on bounding box data
-
-        Args:
-            images: Batch of images (B, C, H, W)
-            bbox_data: List of bounding box information
         """
         batch_size = images.size(0)
         device = images.device
@@ -90,10 +86,11 @@ class GraphAugmentedViT(nn.Module):
         area_matrix = torch.zeros(batch_size, self.num_diseases, device=device)
 
         for b in range(batch_size):
-            if bbox_data[b] is None:
-                continue
+            img_name = os.path.basename(bbox_data[b]['path'])
+            boxes = bbox_data[b].get('bbox', {})
 
-            for disease_idx, boxes in bbox_data[b].items():
+            for disease_idx, disease_boxes in enumerate(boxes.items()):
+                disease, boxes = disease_boxes
                 if not boxes:
                     continue
 
@@ -102,7 +99,6 @@ class GraphAugmentedViT(nn.Module):
                 total_area = 0
 
                 for box in boxes:
-                    # Extract region
                     x1, y1, w, h = box
                     x2, y2 = x1 + w, y1 + h
 
@@ -123,47 +119,24 @@ class GraphAugmentedViT(nn.Module):
                     # Get features
                     with torch.no_grad():
                         features = self.vit.forward_features(region)
-                    box_features.append(features.mean(1))  # Pool patch embeddings
+                    box_features.append(features.mean(1))
                     total_area += (y2 - y1) * (x2 - x1)
 
                 if box_features:
-                    # Average features from all boxes
                     region_features[b, disease_idx] = torch.stack(box_features).mean(0)
                     area_matrix[b, disease_idx] = total_area
 
         return region_features, area_matrix
 
-    def update_co_occurrence(self, labels):
-        """Update co-occurrence statistics"""
-        batch_size = labels.size(0)
-
-        for b in range(batch_size):
-            positive_diseases = (labels[b] > 0.5).nonzero().squeeze()
-            if positive_diseases.dim() == 0:
-                continue
-
-            for i in range(len(positive_diseases)):
-                for j in range(i + 1, len(positive_diseases)):
-                    d1, d2 = positive_diseases[i], positive_diseases[j]
-                    self.co_occurrence_matrix[d1, d2] += 1
-                    self.co_occurrence_matrix[d2, d1] += 1
-                    self.co_occurrence_count[d1, d2] += 1
-                    self.co_occurrence_count[d2, d1] += 1
-
     def forward(self, images, bbox_data=None, labels=None):
         """
         Forward pass
-
-        Args:
-            images: Input images (B, C, H, W)
-            bbox_data: Optional bounding box information
-            labels: Optional labels for updating co-occurrence
         """
         batch_size = images.size(0)
         device = images.device
 
         # Get global image features
-        vit_features = self.vit(images)  # (B, feature_dim)
+        vit_features = self.vit(images)
         pooled_features = self.feature_pooling(vit_features)
 
         # Extract region features if bbox_data is provided
@@ -202,6 +175,7 @@ class GraphAugmentedViT(nn.Module):
             self.update_co_occurrence(labels)
 
         return torch.sigmoid(logits)
+
 
     def get_attention_weights(self, images, bbox_data=None):
         """
