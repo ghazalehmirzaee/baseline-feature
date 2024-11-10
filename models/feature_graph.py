@@ -1,72 +1,231 @@
 # models/feature_graph.py
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import timm
 from torch_geometric.nn import GCNConv
-from .graph_modules.feature_extractor import RegionFeatureExtractor
-from .graph_modules.graph_constructor import ProgressiveGraphConstructor
-from .graph_modules.graph_fusion import ConcatMLPFusion
+import logging
+from typing import Optional, Dict, Any
 
 
 class FeatureGraphModel(nn.Module):
-    def __init__(self, config, baseline_model):
+    def __init__(self, config: Dict[str, Any], baseline_state_dict: Optional[Dict[str, torch.Tensor]] = None):
         super().__init__()
         self.config = config
+        self.logger = logging.getLogger(__name__)
 
-        # Initialize components
-        self.feature_extractor = RegionFeatureExtractor(baseline_model)
-        self.graph_constructor = ProgressiveGraphConstructor(config.graph_construction)
+        # Initialize the base ViT model
+        self.backbone = timm.create_model(
+            'vit_base_patch16_224',
+            pretrained=False,
+            num_classes=0  # Remove classification head
+        )
+
+        # Load the pretrained weights if provided
+        if baseline_state_dict is not None:
+            try:
+                # Remove the head weights as we don't need them
+                state_dict = {k: v for k, v in baseline_state_dict.items()
+                              if not k.startswith('head.')}
+
+                # Load the state dict
+                msg = self.backbone.load_state_dict(state_dict, strict=False)
+                self.logger.info(f"Loaded baseline model weights: {msg}")
+            except Exception as e:
+                self.logger.error(f"Error loading baseline weights: {e}")
+                raise
+
+        # Freeze the backbone if specified in config
+        if config['model'].get('freeze_backbone', True):
+            self.logger.info("Freezing backbone weights")
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+
+        # Initialize graph components
+        self.feature_dim = config['model']['feature_dim']
+        self.graph_hidden_dim = config['model']['graph_hidden_dim']
+
+        # Feature extraction layers
+        self.region_feature_proj = nn.Sequential(
+            nn.Linear(self.feature_dim, self.graph_hidden_dim),
+            nn.LayerNorm(self.graph_hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(config['model']['dropout_rate'])
+        )
 
         # Graph neural network layers
         self.graph_layers = nn.ModuleList([
-            GCNConv(config.model.feature_dim, config.model.graph_hidden_dim),
-            GCNConv(config.model.graph_hidden_dim, config.model.graph_hidden_dim)
+            GCNConv(
+                in_channels=self.graph_hidden_dim if i == 0 else self.graph_hidden_dim,
+                out_channels=self.graph_hidden_dim
+            )
+            for i in range(config['model']['num_graph_layers'])
         ])
 
-        # Fusion module
-        self.fusion = ConcatMLPFusion(
-            feature_dim=config.model.feature_dim,
-            graph_dim=config.model.graph_hidden_dim,
-            hidden_dim=config.model.graph_hidden_dim,
-            num_classes=14
+        # Graph attention for combining node features
+        self.graph_attention = nn.MultiheadAttention(
+            embed_dim=self.graph_hidden_dim,
+            num_heads=8,
+            dropout=config['model']['dropout_rate']
         )
 
-        self.dropout = nn.Dropout(config.model.dropout_rate)
+        # Fusion module
+        fusion_input_dim = self.feature_dim + self.graph_hidden_dim
+        self.fusion_mlp = nn.Sequential(
+            nn.Linear(fusion_input_dim, self.graph_hidden_dim),
+            nn.LayerNorm(self.graph_hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(config['model']['dropout_rate']),
+            nn.Linear(self.graph_hidden_dim, config['dataset']['num_classes'])
+        )
 
-    def forward(self, images, bboxes=None):
+        # Initialize weights
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        """Initialize the weights."""
+        if isinstance(module, (nn.Linear, nn.Conv2d)):
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.constant_(module.weight, 1.0)
+            nn.init.constant_(module.bias, 0)
+
+    def extract_region_features(self, images: torch.Tensor, bboxes: list) -> torch.Tensor:
+        """Extract features from image regions defined by bounding boxes."""
+        batch_size = images.shape[0]
+        all_region_features = []
+
+        for i in range(batch_size):
+            if bboxes[i] is None or len(bboxes[i]['boxes']) == 0:
+                # If no bounding boxes, use global features
+                with torch.no_grad():
+                    features = self.backbone(images[i].unsqueeze(0))
+                all_region_features.append(features)
+                continue
+
+            boxes = bboxes[i]['boxes']
+            region_features = []
+
+            for box in boxes:
+                # Extract region
+                x1, y1, w, h = box
+                x2, y2 = x1 + w, y1 + h
+
+                # Add padding
+                padding = min(0.1, 50 / torch.sqrt(torch.tensor(w * h)))
+                pad_x = w * padding
+                pad_y = h * padding
+
+                x1 = max(0, x1 - pad_x)
+                y1 = max(0, y1 - pad_y)
+                x2 = min(images.shape[3], x2 + pad_x)
+                y2 = min(images.shape[2], y2 + pad_y)
+
+                # Crop and resize region
+                region = F.interpolate(
+                    images[i:i + 1, :, int(y1):int(y2), int(x1):int(x2)],
+                    size=(224, 224),
+                    mode='bilinear',
+                    align_corners=False
+                )
+
+                # Extract features
+                with torch.no_grad():
+                    features = self.backbone(region)
+                region_features.append(features)
+
+            # Combine region features
+            region_features = torch.cat(region_features, dim=0)
+            all_region_features.append(region_features)
+
+        # Process features through projection layer
+        processed_features = []
+        for features in all_region_features:
+            projected = self.region_feature_proj(features)
+            processed_features.append(projected)
+
+        return processed_features
+
+    def build_graph(self, region_features: list) -> tuple:
+        """Build graph from region features."""
+        batch_graphs = []
+        batch_features = []
+
+        for features in region_features:
+            num_nodes = features.size(0)
+
+            # Compute adjacency matrix using attention
+            features_t = features.transpose(0, 1).unsqueeze(1)  # [D, 1, N]
+            attn_output, attn_weights = self.graph_attention(
+                features_t, features_t, features_t
+            )
+
+            # Convert attention weights to adjacency matrix
+            adj_matrix = attn_weights.squeeze(0)  # [N, N]
+
+            batch_graphs.append(adj_matrix)
+            batch_features.append(features)
+
+        return batch_graphs, batch_features
+
+    def forward(self, images: torch.Tensor, bboxes: Optional[list] = None) -> torch.Tensor:
+        """Forward pass of the model."""
         # Get baseline features
-        baseline_features = self.feature_extractor.vit(images)
+        batch_features = self.backbone(images)  # [B, D]
 
         if self.training and bboxes is not None:
-            # Extract region features and construct graph
-            region_features, areas = self.feature_extractor.extract_region_features(images, bboxes)
-            adj_matrix = self.graph_constructor(region_features, areas, self._get_sample_pairs(bboxes))
+            # Extract region features and build graph
+            region_features = self.extract_region_features(images, bboxes)
+            graphs, node_features = self.build_graph(region_features)
 
-            # Apply GNN layers
-            x = region_features
-            for layer in self.graph_layers:
-                x = layer(x, adj_matrix)
-                x = torch.relu(x)
-                x = self.dropout(x)
+            # Process each graph
+            graph_embeddings = []
+            for adj_matrix, features in zip(graphs, node_features):
+                x = features
 
-            graph_embeddings = x
+                # Apply GNN layers
+                for layer in self.graph_layers:
+                    x = layer(x, adj_matrix)
+                    x = F.relu(x)
+                    x = F.dropout(x, p=self.config['model']['dropout_rate'], training=self.training)
+
+                # Aggregate node embeddings
+                graph_embedding = x.mean(dim=0)  # [D]
+                graph_embeddings.append(graph_embedding)
+
+            graph_embeddings = torch.stack(graph_embeddings)  # [B, D]
+
         else:
-            # During inference or when no BBs available, use learned average embeddings
-            graph_embeddings = self.graph_layers[-1].weight.mean(0).expand(len(images), -1)
+            # During inference or when no BBs available
+            graph_embeddings = torch.zeros(
+                batch_features.shape[0],
+                self.graph_hidden_dim,
+                device=batch_features.device
+            )
 
-        # Fuse features and get predictions
-        predictions = self.fusion(baseline_features, graph_embeddings)
-        return predictions
+        # Concatenate and fuse features
+        combined_features = torch.cat([batch_features, graph_embeddings], dim=1)
+        logits = self.fusion_mlp(combined_features)
 
-    def _get_sample_pairs(self, bboxes):
-        """Create dictionary of disease pairs and their sample indices."""
-        pairs = {}
-        for idx, bb in enumerate(bboxes):
-            diseases = bb["labels"]
-            for i in range(len(diseases)):
-                for j in range(i + 1, len(diseases)):
-                    pair = (min(diseases[i], diseases[j]), max(diseases[i], diseases[j]))
-                    if pair not in pairs:
-                        pairs[pair] = []
-                    pairs[pair].append(idx)
-        return pairs
+        return logits
+
+    def get_attention_weights(self) -> Dict[str, torch.Tensor]:
+        """Get attention weights for visualization."""
+        if hasattr(self, 'graph_attention'):
+            return {
+                'graph_attention': self.graph_attention.get_attention_weights()
+            }
+        return {}
+
+    def freeze_backbone(self):
+        """Freeze the backbone network."""
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+
+    def unfreeze_backbone(self):
+        """Unfreeze the backbone network."""
+        for param in self.backbone.parameters():
+            param.requires_grad = True
 

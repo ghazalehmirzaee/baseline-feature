@@ -66,15 +66,24 @@ class Trainer:
 
     def _setup_model(self):
         try:
-            # Load baseline model with error handling
             checkpoint_path = self.config['model']['baseline_checkpoint']
-            if not os.path.exists(checkpoint_path):
-                raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+            self.logger.info(f"Loading checkpoint from {checkpoint_path}")
 
-            self.logger.info("Loading baseline checkpoint...")
-            self.baseline_model = self._load_checkpoint(checkpoint_path)
+            # Load checkpoint
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
 
-            # Initialize feature graph model
+            # We want to use the model_state_dict for our baseline model
+            if 'model_state_dict' in checkpoint:
+                self.logger.info("Found model_state_dict in checkpoint")
+                self.baseline_model = checkpoint['model_state_dict']
+            else:
+                raise ValueError("Checkpoint does not contain model_state_dict")
+
+            # Store best validation AUC for reference
+            self.best_val_auc = checkpoint.get('best_val_auc', 0.0)
+            self.logger.info(f"Previous best validation AUC: {self.best_val_auc}")
+
+            # Initialize feature graph model with the state dict
             self.logger.info("Initializing feature graph model...")
             self.model = FeatureGraphModel(self.config, self.baseline_model).to(self.device)
 
@@ -83,14 +92,22 @@ class Trainer:
             self.criterion = MultiComponentLoss(self.config['training']['loss_weights'])
 
             # Calculate positive weights for WBCE
-            self.logger.info("Computing class weights...")
             pos_counts = torch.tensor(self.config['dataset']['positive_counts'])
             neg_counts = torch.tensor(self.config['dataset']['negative_counts'])
             self.pos_weights = (neg_counts / pos_counts).to(self.device)
 
+            # Log some information about the loaded model
+            if 'metrics' in checkpoint:
+                self.logger.info("Previous model metrics:")
+                self.logger.info(f"Mean AUC: {checkpoint['metrics']['mean_auc']:.4f}")
+                self.logger.info(f"Mean AP: {checkpoint['metrics']['mean_ap']:.4f}")
+                self.logger.info(f"Mean F1: {checkpoint['metrics']['mean_f1']:.4f}")
+
         except Exception as e:
             self.logger.error(f"Error in model setup: {str(e)}")
+            self.logger.error("Traceback:", exc_info=True)
             raise RuntimeError(f"Model setup failed: {str(e)}")
+
 
     def train_epoch(self, train_loader, epoch):
         self.model.train()

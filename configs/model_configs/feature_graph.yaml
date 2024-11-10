@@ -16,13 +16,6 @@ dataset:
     'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
   ]
 
-  # These paths will be updated by the training script
-  train_csv: ""
-  val_csv: ""
-  test_csv: ""
-  image_dir: ""
-  bb_annotations: ""
-
 
 model:
   name: "feature_graph"
@@ -32,6 +25,7 @@ model:
   num_graph_layers: 2
   dropout_rate: 0.1
   fusion_type: "concat_mlp"
+  freeze_backbone: true
 
 
 training:

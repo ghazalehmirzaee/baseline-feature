@@ -12,4 +12,4 @@ pyyaml>=5.4.1
 tqdm>=4.62.3
 pytorch-lightning>=1.5.0
 albumentations>=1.1.0
-
+timm>=0.5.4
