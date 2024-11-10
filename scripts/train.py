@@ -93,8 +93,15 @@ def compute_class_weights(labels):
     ]
 
     print("\nClass Distribution:")
+    print("-" * 75)
+    print(f"{'Disease':20} {'Positives':>10} {'Negatives':>10} {'Weight':>10}")
+    print("-" * 75)
+
     for i, disease in enumerate(disease_names):
-        print(f"{disease:20} Pos: {pos_counts[i] - eps:5d} Neg: {neg_counts[i] - eps:5d} Weight: {weights[i]:.2f}")
+        print(f"{disease:20} {int(pos_counts[i] - eps):10d} {int(neg_counts[i] - eps):10d} {weights[i]:10.2f}")
+
+    print("-" * 75)
+    print(f"Total samples: {num_samples}")
 
     return torch.FloatTensor(weights)
 
