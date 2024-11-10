@@ -167,9 +167,14 @@ def main():
         pretrained_path=config['model']['pretrained_path']
     )
 
+
     # Create loss function
     criterion = MultiComponentLoss(
-        weights=config['loss_weights'],
+        weights={
+            'wbce': config['loss_weights']['wbce'],
+            'focal': config['loss_weights']['focal'],
+            'asymmetric': config['loss_weights']['asymmetric']
+        },
         class_weights=class_weights
     )
 
