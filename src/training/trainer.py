@@ -1,16 +1,25 @@
 # src/training/trainer.py
 
 import torch
-import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
 import wandb
-import numpy as np
 from tqdm import tqdm
+from typing import Dict, Tuple
 from ..utils.metrics import calculate_metrics
 
+
 class Trainer:
-    def __init__(self, model, criterion, train_loader, val_loader, config, device='cuda'):
+    """Training manager"""
+
+    def __init__(
+            self,
+            model,
+            criterion,
+            train_loader,
+            val_loader,
+            config: Dict,
+            device: str = 'cuda'
+    ):
         self.model = model.to(device)
         self.criterion = criterion
         self.train_loader = train_loader
@@ -25,13 +34,12 @@ class Trainer:
             weight_decay=config['weight_decay']
         )
 
-        # Learning rate scheduler
+        # Scheduler
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
             mode='max',
             factor=0.5,
-            patience=5,
-            verbose=True
+            patience=5
         )
 
         # Early stopping
@@ -39,7 +47,8 @@ class Trainer:
         self.patience = config['patience']
         self.patience_counter = 0
 
-    def train_epoch(self):
+    def train_epoch(self) -> Tuple[float, Dict]:
+        """Train for one epoch"""
         self.model.train()
         total_loss = 0
         predictions = []
@@ -47,22 +56,13 @@ class Trainer:
 
         pbar = tqdm(self.train_loader, desc='Training')
         for batch in pbar:
-            # Move everything to device
+            # Get batch data
             images = batch['image'].to(self.device)
             labels = batch['labels'].to(self.device)
 
-            # Prepare batch data dictionary
-            batch_data = {
-                'images': images,
-                'labels': labels,
-                'bbox': batch['bbox'],
-                'image_path': batch['image_path'],
-                'image_name': batch['image_name']
-            }
-
             # Forward pass
             self.optimizer.zero_grad()
-            outputs = self.model(images, batch_data)
+            outputs = self.model(images, batch)
 
             # Compute loss
             loss, loss_components = self.criterion(outputs, labels)
@@ -71,7 +71,7 @@ class Trainer:
             loss.backward()
             self.optimizer.step()
 
-            # Track metrics
+            # Update metrics
             total_loss += loss.item()
             predictions.append(outputs.detach().cpu())
             targets.append(labels.cpu())
@@ -86,7 +86,8 @@ class Trainer:
         return total_loss / len(self.train_loader), metrics
 
     @torch.no_grad()
-    def validate(self):
+    def validate(self) -> Tuple[float, Dict]:
+        """Validate model"""
         self.model.eval()
         total_loss = 0
         predictions = []
@@ -96,15 +97,7 @@ class Trainer:
             images = batch['image'].to(self.device)
             labels = batch['labels'].to(self.device)
 
-            batch_data = {
-                'images': images,
-                'labels': labels,
-                'bbox': batch['bbox'],
-                'image_path': batch['image_path'],
-                'image_name': batch['image_name']
-            }
-
-            outputs = self.model(images, batch_data)
+            outputs = self.model(images, batch)
             loss, _ = self.criterion(outputs, labels)
 
             total_loss += loss.item()
@@ -117,7 +110,33 @@ class Trainer:
 
         return total_loss / len(self.val_loader), metrics
 
-    def train(self, num_epochs):
+    def save_checkpoint(
+            self,
+            epoch: int,
+            metrics: Dict,
+            is_best: bool = False
+    ):
+        """Save model checkpoint"""
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'metrics': metrics,
+            'config': self.config
+        }
+
+        # Save checkpoint
+        path = f"{self.config['checkpoint_dir']}/checkpoint_epoch_{epoch}_auc_{metrics['mean_auc']:.4f}.pt"
+        torch.save(checkpoint, path)
+
+        # Save best model
+        if is_best:
+            best_path = f"{self.config['checkpoint_dir']}/best_model.pt"
+            torch.save(checkpoint, best_path)
+
+    def train(self, num_epochs: int):
+        """Complete training procedure"""
         for epoch in range(num_epochs):
             print(f'\nEpoch {epoch + 1}/{num_epochs}')
 
@@ -127,7 +146,7 @@ class Trainer:
             # Validation
             val_loss, val_metrics = self.validate()
 
-            # Learning rate scheduling
+            # Scheduler step
             self.scheduler.step(val_metrics['mean_auc'])
 
             # Early stopping
@@ -137,6 +156,7 @@ class Trainer:
                 self.save_checkpoint(epoch, val_metrics, is_best=True)
             else:
                 self.patience_counter += 1
+                self.save_checkpoint(epoch, val_metrics)
 
             # Log metrics
             wandb.log({
@@ -144,7 +164,7 @@ class Trainer:
                 'val_loss': val_loss,
                 **{f'train_{k}': v for k, v in train_metrics.items()},
                 **{f'val_{k}': v for k, v in val_metrics.items()},
-                'lr': self.optimizer.param_groups[0]['lr']
+                'learning_rate': self.optimizer.param_groups[0]['lr']
             })
 
             if self.patience_counter >= self.patience:

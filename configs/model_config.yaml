@@ -7,12 +7,15 @@ val_labels: "/users/gm00051/ChestX-ray14/labels/val_list.txt"
 test_labels: "/users/gm00051/ChestX-ray14/labels/test_list.txt"
 bbox_data_path: "/users/gm00051/ChestX-ray14/labels/BBox_List_2017.csv"
 
+
 # Model configuration
 model:
-  num_diseases: 14
+  pretrained_path: "/users/gm00051/projects/cvpr/baseline/Graph-Augmented-Vision-Transformers/scripts/checkpoints/checkpoint_epoch_82_auc_0.7225.pt"
   feature_dim: 768
   hidden_dim: 512
-  pretrained_path: null  # Path to pretrained weights if available
+  num_diseases: 14
+  graph_layers: 2
+  dropout: 0.1
 
 # Training configuration
 training:
@@ -20,7 +23,7 @@ training:
   num_epochs: 100
   learning_rate: 0.0001
   weight_decay: 0.01
-  patience: 10
+  patience: 10  # Early stopping patience
   num_workers: 4
 
 # Loss weights
@@ -29,16 +32,12 @@ loss_weights:
   focal: 1.0
   asymmetric: 1.0
 
-
 # Checkpointing
-checkpoint:
-  dir: "checkpoints"
-  save_frequency: 5
-
+checkpoint_dir: "checkpoints"
+save_frequency: 5
 
 # Logging
 wandb:
   project: "Graph-Augmented ViT"
   entity: "mirzaeeghazal"
   run_name: "baseline+feature"
-

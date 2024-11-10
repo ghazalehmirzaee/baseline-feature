@@ -1,45 +1,26 @@
 # scripts/train.py
 
-import argparse
+import os
 import yaml
 import torch
-import os
-import pandas as pd
 import numpy as np
+from torch.utils.data import DataLoader
+import argparse
+import wandb
+from src.data.dataset import ChestXrayDataset, custom_collate_fn
 from src.data.transforms import get_train_transforms, get_val_transforms
 from src.models.model import GraphAugmentedViT
 from src.training.loss import MultiComponentLoss
 from src.training.trainer import Trainer
-from torch.utils.data import DataLoader
-from src.data.dataset import ChestXrayDataset, custom_collate_fn
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, required=True)
+    parser.add_argument('--config', type=str, required=True, help='Path to config file')
     return parser.parse_args()
 
 
-def load_bbox_data(bbox_file):
-    """Load bounding box annotations"""
-    bbox_data = {}
-    if os.path.exists(bbox_file):
-        bbox_df = pd.read_csv(bbox_file)
-        for _, row in bbox_df.iterrows():
-            img_name = row['Image Index']
-            if img_name not in bbox_data:
-                bbox_data[img_name] = {}
-            label = row['Finding Label']
-            if label not in bbox_data[img_name]:
-                bbox_data[img_name][label] = []
-            bbox_data[img_name][label].append([
-                row['Bbox_x'], row['Bbox_y'],
-                row['Bbox_w'], row['Bbox_h']
-            ])
-    return bbox_data
-
-
-def load_dataset_from_txt(image_dir, label_file):
+def load_dataset_from_txt(image_dir: str, label_file: str):
     """Load dataset from txt file"""
     images = []
     labels = []
@@ -53,11 +34,31 @@ def load_dataset_from_txt(image_dir, label_file):
             img_path = os.path.join(image_dir, parts[0])
             if os.path.exists(img_path):
                 images.append(img_path)
-                # Convert label strings to integers
                 label_vector = [int(x) for x in parts[1:15]]
                 labels.append(label_vector)
 
     return images, np.array(labels)
+
+
+def load_bbox_data(bbox_file: str):
+    """Load bounding box annotations"""
+    bbox_data = {}
+    if os.path.exists(bbox_file):
+        with open(bbox_file, 'r') as f:
+            next(f)  # Skip header
+            for line in f:
+                parts = line.strip().split(',')
+                img_name = parts[0]
+                disease = parts[1]
+                bbox = list(map(float, parts[2:6]))  # x, y, w, h
+
+                if img_name not in bbox_data:
+                    bbox_data[img_name] = {}
+                if disease not in bbox_data[img_name]:
+                    bbox_data[img_name][disease] = []
+                bbox_data[img_name][disease].append(bbox)
+
+    return bbox_data
 
 
 def compute_class_weights(labels):
@@ -66,31 +67,9 @@ def compute_class_weights(labels):
     pos_counts = np.sum(labels, axis=0)
     neg_counts = num_samples - pos_counts
 
-    disease_names = [
-        'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration',
-        'Mass', 'Nodule', 'Pneumonia', 'Pneumothorax', 'Consolidation',
-        'Edema', 'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
-    ]
-
-    # Compute weights
-    pos_ratios = pos_counts / neg_counts
-    min_ratio = np.min(pos_ratios)
-    weights = min_ratio / pos_ratios
-
-    print("\nDisease Distribution Analysis:")
-    print("-" * 80)
-    print(f"{'Disease':20} {'Count':>8} {'Percentage':>12} {'Pos/Neg Ratio':>15} {'Weight':>8}")
-    print("-" * 80)
-
-    for i, disease in enumerate(disease_names):
-        count = pos_counts[i]
-        percentage = (count / num_samples) * 100
-        ratio = pos_ratios[i]
-        weight = weights[i]
-        print(f"{disease:20} {int(count):8d} {percentage:11.2f}% {ratio:14.3f} {weight:8.2f}")
-
-    print("-" * 80)
-    print(f"Total samples: {num_samples}")
+    # Compute weights using positive/negative ratio
+    ratios = pos_counts / neg_counts
+    weights = np.min(ratios) / ratios
 
     return torch.FloatTensor(weights)
 
@@ -125,26 +104,23 @@ def main():
     # Compute class weights
     print("Computing class weights...")
     class_weights = compute_class_weights(train_labels)
-    print("Class weights:", class_weights.numpy())
 
     # Create datasets
     train_dataset = ChestXrayDataset(
-        image_paths=train_images,
-        labels=train_labels,
-        bbox_data=bbox_data,
+        train_images,
+        train_labels,
+        bbox_data,
         transform=get_train_transforms()
     )
 
     val_dataset = ChestXrayDataset(
-        image_paths=val_images,
-        labels=val_labels,
-        bbox_data=bbox_data,
+        val_images,
+        val_labels,
+        bbox_data,
         transform=get_val_transforms()
     )
 
-
     # Create dataloaders
-    print("Creating dataloaders...")
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['training']['batch_size'],
@@ -163,22 +139,26 @@ def main():
         collate_fn=custom_collate_fn
     )
 
-    # Create model
+    # Initialize model
     print("Creating model...")
     model = GraphAugmentedViT(
+        pretrained_path=config['model']['pretrained_path'],
         num_diseases=14,
-        pretrained_path=config['model']['pretrained_path']
+        feature_dim=config['model']['feature_dim'],
+        hidden_dim=config['model']['hidden_dim']
     )
-
 
     # Create loss function
     criterion = MultiComponentLoss(
-        weights={
-            'wbce': config['loss_weights']['wbce'],
-            'focal': config['loss_weights']['focal'],
-            'asymmetric': config['loss_weights']['asymmetric']
-        },
+        weights=config['loss_weights'],
         class_weights=class_weights
+    )
+
+    # Initialize wandb
+    wandb.init(
+        project=config['wandb']['project'],
+        config=config,
+        name=config['wandb']['run_name']
     )
 
     # Create trainer
@@ -198,4 +178,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
