@@ -1,9 +1,11 @@
 # configs/model_configs/baseline.yaml
 model:
   name: "vit_base_patch16"
+  baseline_checkpoint: "/users/gm00051/projects/cvpr/baseline/Graph-Augmented-Vision-Transformers/scripts/checkpoints/checkpoint_epoch_82_auc_0.7225.pt"
   pretrained: true
   num_classes: 14
   dropout_rate: 0.1
+
 
 training:
   batch_size: 32

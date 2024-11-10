@@ -19,9 +19,10 @@ from utils.logger import setup_logging
 from data.datasets import get_data_loaders
 
 
+# scripts/train.py (relevant section)
 
 class Trainer:
-    def __init__(self, config):  # Changed to accept config directly instead of config_path
+    def __init__(self, config):
         self.config = config
         self.logger = setup_logging("feature_graph_training")
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -36,51 +37,60 @@ class Trainer:
         self._setup_model()
         self._setup_training()
 
+    def _load_checkpoint(self, checkpoint_path):
+        """Helper function to load checkpoint with proper error handling."""
+        self.logger.info(f"Loading checkpoint from {checkpoint_path}")
+
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+
+            # Check checkpoint structure
+            if isinstance(checkpoint, dict):
+                if 'model' in checkpoint:
+                    return checkpoint['model']
+                elif 'state_dict' in checkpoint:
+                    return checkpoint['state_dict']
+                else:
+                    # If checkpoint is a dict but doesn't have expected keys,
+                    # try using it directly
+                    self.logger.warning("Checkpoint structure is non-standard. Attempting to use directly.")
+                    return checkpoint
+            else:
+                # If checkpoint is not a dict, try using it directly
+                self.logger.warning("Checkpoint is not a dictionary. Attempting to use directly.")
+                return checkpoint
+
+        except Exception as e:
+            self.logger.error(f"Error loading checkpoint: {str(e)}")
+            raise RuntimeError(f"Failed to load checkpoint: {str(e)}")
+
     def _setup_model(self):
-        # Load baseline model
-        baseline_checkpoint = torch.load(self.config['model']['baseline_checkpoint'])
-        self.baseline_model = baseline_checkpoint['model']
+        try:
+            # Load baseline model with error handling
+            checkpoint_path = self.config['model']['baseline_checkpoint']
+            if not os.path.exists(checkpoint_path):
+                raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
-        # Initialize feature graph model
-        self.model = FeatureGraphModel(self.config, self.baseline_model).to(self.device)
+            self.logger.info("Loading baseline checkpoint...")
+            self.baseline_model = self._load_checkpoint(checkpoint_path)
 
-        # Loss and metrics
-        self.criterion = MultiComponentLoss(self.config['training']['loss_weights'])
+            # Initialize feature graph model
+            self.logger.info("Initializing feature graph model...")
+            self.model = FeatureGraphModel(self.config, self.baseline_model).to(self.device)
 
-        # Calculate positive weights for WBCE
-        pos_counts = torch.tensor(self.config['dataset']['positive_counts'])
-        neg_counts = torch.tensor(self.config['dataset']['negative_counts'])
-        self.pos_weights = (neg_counts / pos_counts).to(self.device)
+            # Loss and metrics
+            self.logger.info("Setting up loss function...")
+            self.criterion = MultiComponentLoss(self.config['training']['loss_weights'])
 
-    def _load_config(self, config_path):
-        with open(config_path) as f:
-            return yaml.safe_load(f)
+            # Calculate positive weights for WBCE
+            self.logger.info("Computing class weights...")
+            pos_counts = torch.tensor(self.config['dataset']['positive_counts'])
+            neg_counts = torch.tensor(self.config['dataset']['negative_counts'])
+            self.pos_weights = (neg_counts / pos_counts).to(self.device)
 
-    def _setup_training(self):
-        # Optimizer
-        self.optimizer = AdamW(
-            self.model.parameters(),
-            lr=self.config['training']['learning_rate'],
-            weight_decay=self.config['training']['weight_decay']
-        )
-
-        # Learning rate scheduler
-        self.scheduler = CosineAnnealingWarmRestarts(
-            self.optimizer,
-            T_0=self.config['training']['warmup_epochs'],
-            T_mult=2
-        )
-
-        # Initialize best metrics
-        self.best_metrics = {
-            'mean_auc': 0.0,
-            'epoch': 0,
-            'steps': 0
-        }
-
-        # Early stopping
-        self.patience = self.config['training'].get('patience', 10)
-        self.patience_counter = 0
+        except Exception as e:
+            self.logger.error(f"Error in model setup: {str(e)}")
+            raise RuntimeError(f"Model setup failed: {str(e)}")
 
     def train_epoch(self, train_loader, epoch):
         self.model.train()
