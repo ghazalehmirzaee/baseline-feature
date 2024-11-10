@@ -100,8 +100,10 @@ class FeatureGraphModel(nn.Module):
         for i in range(batch_size):
             # Get bounding boxes for this image
             boxes = bboxes['boxes'][i]
-            if len(boxes) == 0:
-                # If no bounding boxes, use global features
+
+            # Handle case with no valid boxes
+            if len(boxes) == 0 or not isinstance(boxes, torch.Tensor):
+                # Use global features instead
                 with torch.no_grad():
                     features = self.backbone(images[i].unsqueeze(0))
                 all_region_features.append(features)
@@ -109,39 +111,61 @@ class FeatureGraphModel(nn.Module):
 
             region_features = []
             for box in boxes:
-                # Extract region
-                x1, y1, w, h = box.tolist()
-                x2, y2 = x1 + w, y1 + h
+                try:
+                    # Extract region coordinates
+                    x1, y1, w, h = box.tolist()
 
-                # Add padding
-                padding = min(0.1, 50 / torch.sqrt(torch.tensor(w * h)))
-                pad_x = w * padding
-                pad_y = h * padding
+                    # Validate box dimensions
+                    if w <= 0 or h <= 0:
+                        continue
 
-                x1 = max(0, x1 - pad_x)
-                y1 = max(0, y1 - pad_y)
-                x2 = min(images.shape[3], x2 + pad_x)
-                y2 = min(images.shape[2], y2 + pad_y)
+                    x2, y2 = x1 + w, y1 + h
 
-                # Crop and resize region
-                region = F.interpolate(
-                    images[i:i + 1, :, int(y1):int(y2), int(x1):int(x2)],
-                    size=(224, 224),
-                    mode='bilinear',
-                    align_corners=False
-                )
+                    # Calculate padding
+                    padding = min(0.1, 50 / torch.sqrt(torch.tensor(w * h)))
+                    pad_x = int(w * padding)
+                    pad_y = int(h * padding)
 
-                # Extract features
-                with torch.no_grad():
-                    features = self.backbone(region)
-                region_features.append(features)
+                    # Apply padding with bounds checking
+                    x1_pad = max(0, int(x1 - pad_x))
+                    y1_pad = max(0, int(y1 - pad_y))
+                    x2_pad = min(images.shape[3], int(x2 + pad_x))
+                    y2_pad = min(images.shape[2], int(y2 + pad_y))
 
-            # Combine region features
+                    # Verify region size after padding
+                    if x2_pad <= x1_pad or y2_pad <= y1_pad:
+                        continue
+
+                    # Crop and resize region
+                    region = images[i:i + 1, :, y1_pad:y2_pad, x1_pad:x2_pad]
+
+                    # Verify region is not empty
+                    if region.numel() == 0 or region.size(2) == 0 or region.size(3) == 0:
+                        continue
+
+                    # Resize region
+                    region = F.interpolate(
+                        region,
+                        size=(224, 224),
+                        mode='bilinear',
+                        align_corners=False
+                    )
+
+                    # Extract features
+                    with torch.no_grad():
+                        features = self.backbone(region)
+                    region_features.append(features)
+
+                except Exception as e:
+                    self.logger.warning(f"Error processing box {box}: {str(e)}")
+                    continue
+
+            # Combine region features or use global features if no valid regions
             if region_features:
                 region_features = torch.cat(region_features, dim=0)
                 all_region_features.append(region_features)
             else:
-                # Fallback to global features if no valid regions
+                # Fallback to global features
                 with torch.no_grad():
                     features = self.backbone(images[i].unsqueeze(0))
                 all_region_features.append(features)
@@ -153,6 +177,7 @@ class FeatureGraphModel(nn.Module):
             processed_features.append(projected)
 
         return processed_features
+
 
     def build_graph(self, region_features: list) -> tuple:
         """Build graph from region features."""
@@ -183,32 +208,12 @@ class FeatureGraphModel(nn.Module):
         # Get baseline features
         batch_features = self.backbone(images)  # [B, D]
 
-        if self.training and bboxes is not None and isinstance(bboxes, dict):
+        if self.training and bboxes is not None and all(k in bboxes for k in ['boxes', 'labels', 'areas']):
             try:
-                # Convert list of tensors to padded tensor
-                max_boxes = max(len(boxes) for boxes in bboxes['boxes'])
-                if max_boxes > 0:
-                    padded_boxes = torch.zeros(len(bboxes['boxes']), max_boxes, 4, device=images.device)
-                    padded_labels = torch.zeros(len(bboxes['labels']), max_boxes, device=images.device,
-                                                dtype=torch.long)
-                    padded_areas = torch.zeros(len(bboxes['areas']), max_boxes, device=images.device)
+                # Extract region features and build graph
+                region_features = self.extract_region_features(images, bboxes)
 
-                    # Pad each sample's boxes
-                    for i, (boxes, labels, areas) in enumerate(zip(bboxes['boxes'], bboxes['labels'], bboxes['areas'])):
-                        if len(boxes) > 0:
-                            padded_boxes[i, :len(boxes)] = boxes.to(images.device)
-                            padded_labels[i, :len(labels)] = labels.to(images.device)
-                            padded_areas[i, :len(areas)] = areas.to(images.device)
-
-                    # Create padded bboxes dict
-                    padded_bboxes = {
-                        'boxes': padded_boxes,
-                        'labels': padded_labels,
-                        'areas': padded_areas
-                    }
-
-                    # Extract region features and build graph
-                    region_features = self.extract_region_features(images, padded_bboxes)
+                if region_features:  # Check if we got valid features
                     graphs, node_features = self.build_graph(region_features)
 
                     # Process each graph
@@ -242,7 +247,7 @@ class FeatureGraphModel(nn.Module):
                     )
 
             except Exception as e:
-                self.logger.error(f"Error in graph processing: {str(e)}")
+                self.logger.warning(f"Error in graph processing: {str(e)}")
                 graph_embeddings = torch.zeros(
                     batch_features.shape[0],
                     self.graph_hidden_dim,
@@ -261,6 +266,7 @@ class FeatureGraphModel(nn.Module):
         logits = self.fusion_mlp(combined_features)
 
         return logits
+    
 
     def get_attention_weights(self) -> Dict[str, torch.Tensor]:
         """Get attention weights for visualization."""
