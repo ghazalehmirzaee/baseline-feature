@@ -33,6 +33,7 @@ model:
   fusion_type: "concat_mlp"
   freeze_backbone: true
 
+
 training:
   batch_size: 32
   num_epochs: 100
