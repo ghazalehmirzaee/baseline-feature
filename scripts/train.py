@@ -3,15 +3,15 @@
 import argparse
 import yaml
 import torch
-from torch.utils.data import DataLoader
 import os
 import pandas as pd
 import numpy as np
-from src.data.dataset import ChestXrayDataset
 from src.data.transforms import get_train_transforms, get_val_transforms
 from src.models.model import GraphAugmentedViT
 from src.training.loss import MultiComponentLoss
 from src.training.trainer import Trainer
+from torch.utils.data import DataLoader
+from src.data.dataset import ChestXrayDataset, custom_collate_fn
 
 
 def parse_args():
@@ -142,6 +142,7 @@ def main():
         transform=get_val_transforms()
     )
 
+
     # Create dataloaders
     print("Creating dataloaders...")
     train_loader = DataLoader(
@@ -149,7 +150,8 @@ def main():
         batch_size=config['training']['batch_size'],
         shuffle=True,
         num_workers=config['training']['num_workers'],
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=custom_collate_fn
     )
 
     val_loader = DataLoader(
@@ -157,7 +159,8 @@ def main():
         batch_size=config['training']['batch_size'],
         shuffle=False,
         num_workers=config['training']['num_workers'],
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=custom_collate_fn
     )
 
     # Create model
@@ -195,3 +198,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

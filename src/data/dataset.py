@@ -6,6 +6,25 @@ from torch.utils.data import Dataset
 from PIL import Image
 
 
+def custom_collate_fn(batch):
+    """Custom collate function to handle varying bbox sizes"""
+    images = torch.stack([item['image'] for item in batch])
+    labels = torch.stack([item['labels'] for item in batch])
+    image_paths = [item['image_path'] for item in batch]
+    image_names = [item['image_name'] for item in batch]
+
+    # Handle bbox dictionary separately
+    bbox_data = [item['bbox'] for item in batch]
+
+    return {
+        'image': images,
+        'labels': labels,
+        'bbox': bbox_data,
+        'image_path': image_paths,
+        'image_name': image_names
+    }
+
+
 class ChestXrayDataset(Dataset):
     def __init__(self, image_paths, labels, bbox_data=None, transform=None):
         self.image_paths = image_paths
@@ -38,7 +57,6 @@ class ChestXrayDataset(Dataset):
                 else:
                     bbox_info[disease] = []
         else:
-            # Initialize empty lists for all diseases if no bbox data
             bbox_info = {disease: [] for disease in self.diseases}
 
         # Apply transformations
