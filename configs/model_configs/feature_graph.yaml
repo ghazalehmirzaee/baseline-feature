@@ -16,11 +16,17 @@ dataset:
   std: [0.229, 0.224, 0.225]
   bb_annotations: "/users/gm00051/ChestX-ray14/labels/BBox_List_2017.csv"
 
+  train_csv: "/users/gm00051/ChestX-ray14/labels/train_list.txt"
+  val_csv: "/users/gm00051/ChestX-ray14/labels/val_list.txt"
+  test_csv: "/users/gm00051/ChestX-ray14/labels/test_list.txt"
+  image_dir: "/users/gm00051/ChestX-ray14/images" 
+
   classes: [
     'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass',
     'Nodule', 'Pneumonia', 'Pneumothorax', 'Consolidation', 'Edema',
     'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia'
   ]
+
 
 training:
   batch_size: 32
