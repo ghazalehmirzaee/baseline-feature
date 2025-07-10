@@ -61,20 +61,6 @@ def load_bbox_data(bbox_file: str):
     return bbox_data
 
 
-# def compute_class_weights(labels):
-#     """Compute class weights based on label distribution"""
-#     num_samples = len(labels)
-#     pos_counts = np.sum(labels, axis=0)
-#     neg_counts = num_samples - pos_counts
-#
-#     # Compute weights using positive/negative ratio
-#     ratios = pos_counts / neg_counts
-#     weights = np.min(ratios) / ratios
-#
-#     return torch.FloatTensor(weights)
-#
-
-
 def compute_class_weights(label_file):
     """Compute class weights based on disease distribution and median frequency balancing."""
     disease_names = [
